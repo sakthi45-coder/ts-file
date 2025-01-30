@@ -21,9 +21,13 @@ async deleteYesBtn() {
   this.$data.deleteDialogVisible = false;
 
   try {
+    // Start a timer for 5 seconds
+    const spinnerTimeout = new Promise(resolve => setTimeout(resolve, 5000));
+
     if (isStatusMatch(this.$nuxt.$route, ['drafts'])) {
       // Handle draft template deletion
-      await this.$api.template.deleteDraftTemplate(ids);
+      const deletePromise = this.$api.template.deleteDraftTemplate(ids);
+      await Promise.all([deletePromise, spinnerTimeout]); // Wait for both deletion and timeout
       this.selectedDocumentsCount = 0;
       this.checkState = false;
       this.hideSelectedItems(selectedRecords);
@@ -42,7 +46,7 @@ async deleteYesBtn() {
           });
       });
 
-      await Promise.all(deletePromises);
+      await Promise.all([...deletePromises, spinnerTimeout]); // Wait for all deletions and timeout
       await this.scheduleGridRefresh(); // Ensure this is awaited
     }
   } catch (error) {
