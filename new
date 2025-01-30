@@ -1,0 +1,87 @@
+import { Component, Vue } from "vue-property-decorator";
+
+@Component
+export default class YourComponentName extends Vue {
+  deleteDialogVisible = false;
+
+  created() {
+    // Listen for the event from MergeTemplateDropDown.vue
+    this.$nuxt.$on("showDeleteConfirmDialog", this.showDeleteDialog);
+  }
+
+  showDeleteDialog() {
+    this.deleteDialogVisible = true;
+  }
+
+  deleteYesBtn() {
+    this.$nuxt.$spinner.show(true);
+    const gridObj = this.$refs.grid1.ej2Instances;
+    const selectedRecords = gridObj.getSelectedRecords();
+    const docID = selectedRecords[0]?.documentId;
+    const successContent = this.$nuxt.$t("toast.deleteTempPermanentSuccessToastTittle");
+    const failureContent = this.$nuxt.$t("toast.deleteTempPermanentFailureToastTittle");
+
+    if (!docID) {
+      this.$nuxt.$toastService.show("No document selected", "bs_toast_warning");
+      this.$nuxt.$spinner.show(false);
+      return;
+    }
+
+    this.$api.template
+      .deleteTemplate(docID)
+      .then(() => {
+        this.$nuxt.$toastService.show(successContent, "bs_toast_success", "bs_delete_toast");
+        this.$nuxt.$spinner.show(false);
+      })
+      .catch(() => {
+        this.$nuxt.$toastService.show(failureContent, "bs_toast_failure", "bs_delete_toast");
+        this.$nuxt.$spinner.show(false);
+      });
+
+    this.deleteDialogVisible = false;
+  }
+}
+<template>
+  <ejs-dropdownbutton
+    class="bs-template-merge"
+    id="merge_button"
+    :items="mergeOptions"
+    :content="mergeAndUse"
+    :open="setPopoverPosition"
+    @select="mergeOptionsSelect"
+  ></ejs-dropdownbutton>
+</template>
+
+<script>
+import { Component, Vue } from "vue-property-decorator";
+
+@Component
+export default class MergeTemplateDropDown extends Vue {
+  mergeOptions = [
+    { text: "Create document", id: "mergeDoc" },
+    { text: "Create bulk link", id: "mergeLink" },
+    { text: "Delete", id: "mergedelete" },
+  ];
+
+  mergeAndUse = "Merge & Use";
+
+  mergeOptionsSelect(args) {
+    if (args.item.id === "mergeDoc") {
+      this.$nuxt.$emit("mergeTemplate", "document");
+    } else if (args.item.id === "mergedelete") {
+      // Emit the event to open the delete confirmation dialog
+      this.$nuxt.$emit("showDeleteConfirmDialog");
+    } else {
+      this.$nuxt.$emit("mergeTemplate", "bulklink");
+    }
+  }
+
+  setPopoverPosition() {
+    const dropdown = document.querySelector("#merge_button");
+    const popover = document.querySelector("#merge_button-popup");
+    if (dropdown && popover) {
+      popover.style.left = dropdown.getBoundingClientRect().left + "px";
+    }
+  }
+}
+</script>
