@@ -1,0 +1,55 @@
+async deleteYesBtn() {
+  this.$nuxt.$spinner.show(true);
+  const gridObj = this.$refs.grid1.ej2Instances;
+  const selectedRecords: any[] = gridObj.getSelectedRecords();
+
+  if (!selectedRecords.length) {
+    this.$nuxt.$spinner.show(false);
+    return;
+  }
+
+  const documentName = selectedRecords[0].messageTitle;
+  const successContent = this.$nuxt.$t('toast.deleteTempPermanentSuccessToastTittle', {
+    documentName: documentName,
+  });
+  const failureContent = this.$nuxt.$t('toast.deleteTempPermanentFailureToastTittle', {
+    documentName: documentName,
+  });
+
+  const ids: string[] = selectedRecords.map(item => item.documentId);
+  this.onNewNotificationReceived();
+  this.$data.deleteDialogVisible = false;
+
+  try {
+    if (isStatusMatch(this.$nuxt.$route, ['drafts'])) {
+      // Handle draft template deletion
+      await this.$api.template.deleteDraftTemplate(ids);
+      this.selectedDocumentsCount = 0;
+      this.checkState = false;
+      this.hideSelectedItems(selectedRecords);
+      await this.scheduleGridRefresh(); // Ensure this is awaited
+      this.$nuxt.$toastService.show(successContent, 'bs_toast_success', 'bs_delete_toast');
+    } else {
+      // Handle regular template deletion
+      const deletePromises = ids.map(templateId => {
+        return this.$api.template.deleteTemplate(templateId)
+          .then(() => {
+            this.hideSelectedItems(selectedRecords);
+            this.$nuxt.$toastService.show(successContent, 'bs_toast_success', 'bs_delete_toast');
+          })
+          .catch(() => {
+            this.$nuxt.$toastService.show(failureContent, 'bs_toast_failure', 'bs_delete_toast');
+          });
+      });
+
+      await Promise.all(deletePromises);
+      await this.scheduleGridRefresh(); // Ensure this is awaited
+    }
+  } catch (error) {
+    console.error('Error during deletion:', error);
+  } finally {
+    this.$nuxt.$spinner.show(false); // Spinner stops only after all operations are complete
+  }
+
+  this.isToolbar = false;
+}
