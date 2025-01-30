@@ -1,0 +1,58 @@
+async deleteYesBtn() {
+  this.$nuxt.$spinner.show(true);
+  const gridObj = this.$refs.grid1.ej2Instances;
+  const selectedRecords: any[] = gridObj.getSelectedRecords();
+
+  if (!selectedRecords.length) {
+    this.$nuxt.$spinner.show(false);
+    return;
+  }
+
+  const documentName = selectedRecords[0].messageTitle;
+  const successContent = this.$nuxt.$t('toast.deleteTempPermanentSuccessToastTittle', {
+    documentName: documentName,
+  });
+  const failureContent = this.$nuxt.$t('toast.deleteTempPermanentFailureToastTittle', {
+    documentName: documentName,
+  });
+
+  const ids: string[] = selectedRecords.map(item => item.documentId);
+  this.onNewNotificationReceived();
+  this.$data.deleteDialogVisible = false;
+
+  try {
+    // Start a timer for 5 seconds
+    const spinnerTimeout = new Promise(resolve => setTimeout(resolve, 5000));
+
+    let deletePromise;
+    if (isStatusMatch(this.$nuxt.$route, ['drafts'])) {
+      // Handle draft template deletion
+      deletePromise = this.$api.template.deleteDraftTemplate(ids);
+    } else {
+      // Handle regular template deletion
+      deletePromise = Promise.all(ids.map(templateId => 
+        this.$api.template.deleteTemplate(templateId)
+          .then(() => {
+            this.hideSelectedItems(selectedRecords);
+            this.$nuxt.$toastService.show(successContent, 'bs_toast_success', 'bs_delete_toast');
+          })
+          .catch(() => {
+            this.$nuxt.$toastService.show(failureContent, 'bs_toast_failure', 'bs_delete_toast');
+          })
+      ));
+    }
+
+    // Wait for both deletion and timeout
+    await Promise.all([deletePromise, spinnerTimeout]);
+
+    this.selectedDocumentsCount = 0;
+    this.checkState = false;
+    await this.scheduleGridRefresh(); // Ensure this is awaited
+  } catch (error) {
+    console.error('Error during deletion:', error);
+  } finally {
+    this.$nuxt.$spinner.show(false); // Spinner stops only after all operations are complete
+  }
+
+  this.isToolbar = false;
+}
