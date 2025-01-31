@@ -1,0 +1,64 @@
+[HttpDelete]
+[Authorize]
+[PolicyValidation(PolicyStatus = PolicyStatus.Internally)]
+public async Task<IActionResult> DeleteTemplate(
+    [GuidArray(ErrorMessage = ValidationMessages.ValidDocumentId)]
+    [Required(ErrorMessage = ValidationMessages.Required)]
+    string[] templateId)
+{
+    try
+    {
+        if (templateId == null || templateId.Length == 0 || templateId.Contains(string.Empty))
+        {
+            return this.BadRequest("Failure");
+        }
+
+        string baseUrl = this.requestDetailsService.HostedDomain;
+        Dictionary<string, Task<bool?>> deleteTasks = new Dictionary<string, Task<bool?>>();
+
+        // Process deletion for each template ID
+        foreach (var id in templateId)
+        {
+            var accessRightsList = await this.templateService.GetTemplatesByDocumentId(this.userDataService, id, false).ConfigureAwait(false);
+            if (accessRightsList.Count > 0)
+            {
+                var clearContainerTask = this.documentService.ClearContainers(id, this.userDataService.OrganizationId);
+                await this.templateService.DeleteTemplatesByDocumentIdAsync(this.userDataService.OrganizationId, id).ConfigureAwait(false);
+                await clearContainerTask.ConfigureAwait(false);
+                await this.documentService.NotifyDeletedTemplateUsers(accessRightsList, new Uri(baseUrl), this.hubContext, this.teamManagement).ConfigureAwait(false);
+                _ = this.templateService.LogDeleteUserActivityAsync(accessRightsList, this.orgActivityService).ConfigureAwait(false);
+
+                deleteTasks.Add(id, Task.FromResult<bool?>(true));
+            }
+            else
+            {
+                deleteTasks.Add(id, Task.FromResult<bool?>(false));
+            }
+        }
+
+        await Task.WhenAll(deleteTasks.Select(v => v.Value)).ConfigureAwait(false);
+
+        // Handle response
+        if (deleteTasks.Any(x => x.Value.Result == null))
+        {
+            return this.Forbid();
+        }
+
+        return deleteTasks.All(x => x.Value.Result == true) ? this.Ok("Success") : this.BadRequest("Failure");
+    }
+    catch (Exception ex)
+    {
+        return this.BadRequest("Failure");
+    }
+}
+deletemergeTemplate(templateId: string[]) { 
+  return $axios.$delete('/Template/DeleteTemplate/', {
+    params: { templateId },
+    paramsSerializer: params => new URLSearchParams(templateId.map(id => ['templateId', id])).toString(),
+  });
+}
+deletemergeTemplate(templateId: string[]) { 
+  return $axios.$delete('/Template/DeleteTemplate/', {
+    data: { templateId },  // Send array in request body instead of query params
+  });
+}
