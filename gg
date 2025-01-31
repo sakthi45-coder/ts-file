@@ -1,0 +1,131 @@
+public async Task<ActionResult> DeleteTemplates([FromBody] string[] templateIds)
+{
+    if (templateIds == null || templateIds.Length == 0)
+    {
+        return this.BadRequest("Failure: No template IDs provided.");
+    }
+
+    string baseUrl = this.requestDetailsService.HostedDomain;
+
+    foreach (var templateId in templateIds)
+    {
+        if (string.IsNullOrEmpty(templateId))
+        {
+            continue; // Skip invalid template IDs
+        }
+
+        // isAccessTid is set to false. since, we need to delete both the shared and original template types.
+        var accessRightsList = await this.templateService.GetTemplatesByDocumentId(this.userDataService, templateId, false).ConfigureAwait(false);
+        if (accessRightsList.Count > 0)
+        {
+            var clearContainerTask = this.documentService.ClearContainers(templateId, this.userDataService.OrganizationId);
+            await this.templateService.DeleteTemplatesByDocumentIdAsync(this.userDataService.OrganizationId, templateId).ConfigureAwait(false);
+            await clearContainerTask.ConfigureAwait(false);
+            await this.documentService.NotifyDeletedTemplateUsers(accessRightsList, new Uri(baseUrl), this.hubContext, this.teamManagement).ConfigureAwait(false);
+            _ = this.templateService.LogDeleteUserActivityAsync(accessRightsList, this.orgActivityService).ConfigureAwait(false);
+        }
+    }
+
+    return this.Content("Success: Templates deleted.");
+}
+
+[HttpDelete]
+[Authorize]
+[PolicyValidation(PolicyStatus = PolicyStatus.Internally)]
+public async Task<IActionResult> DeleteTemplate([GuidArray(ErrorMessage = ValidationMessages.ValidDocumentId)][Required(ErrorMessage = ValidationMessages.Required)] string[] templateId)
+{
+    try
+    {
+        if (templateId == null || templateId.Length == 0 || templateId.Contains(string.Empty))
+        {
+            return this.BadRequest("Failure");
+        }
+
+        string baseUrl = this.requestDetailsService.HostedDomain;
+        var accessRightsListTasks = templateId.Select(id => this.templateService.GetTemplatesByDocumentId(this.userDataService, id, false));
+
+        var accessRightsLists = await Task.WhenAll(accessRightsListTasks).ConfigureAwait(false);
+        var allAccessRights = accessRightsLists.SelectMany(list => list).ToList();
+
+        if (allAccessRights.Count > 0)
+        {
+            var deleteTasks = new List<Task>();
+
+            foreach (var id in templateId)
+            {
+                var clearContainerTask = this.documentService.ClearContainers(id, this.userDataService.OrganizationId);
+                var deleteTemplateTask = this.templateService.DeleteTemplatesByDocumentIdAsync(this.userDataService.OrganizationId, id);
+
+                deleteTasks.Add(clearContainerTask);
+                deleteTasks.Add(deleteTemplateTask);
+            }
+
+            await Task.WhenAll(deleteTasks).ConfigureAwait(false);
+
+            await this.documentService.NotifyDeletedTemplateUsers(allAccessRights, new Uri(baseUrl), this.hubContext, this.teamManagement).ConfigureAwait(false);
+            _ = this.templateService.LogDeleteUserActivityAsync(allAccessRights, this.orgActivityService).ConfigureAwait(false);
+
+            return this.Ok("Success");
+        }
+
+        return this.BadRequest("Failure");
+    }
+    catch (Exception ex)
+    {
+        return this.BadRequest("Failure");
+    }
+}
+[HttpDelete]
+[Authorize]
+[PolicyValidation(PolicyStatus = PolicyStatus.Internally)]
+public async Task<IActionResult> DeleteTemplate([GuidArray(ErrorMessage = ValidationMessages.ValidDocumentId)][Required(ErrorMessage = ValidationMessages.Required)] string[] templateId)
+{
+    try
+    {
+        // Validate input
+        if (templateId == null || templateId.Length == 0 || templateId.Contains(string.Empty))
+        {
+            return this.BadRequest("Failure");
+        }
+
+        string baseUrl = this.requestDetailsService.HostedDomain;
+
+        // Retrieve access rights for all templates
+        var accessRightsTasks = templateId.Select(id => this.templateService.GetTemplatesByDocumentId(this.userDataService, id, false));
+        var accessRightsLists = await Task.WhenAll(accessRightsTasks).ConfigureAwait(false);
+        var allAccessRights = accessRightsLists.SelectMany(list => list).ToList();
+
+        if (allAccessRights.Count > 0)
+        {
+            // Create deletion tasks for each template
+            var deleteTasks = new List<Task>();
+
+            foreach (var id in templateId)
+            {
+                var clearContainerTask = this.documentService.ClearContainers(id, this.userDataService.OrganizationId);
+                var deleteTemplateTask = this.templateService.DeleteTemplatesByDocumentIdAsync(this.userDataService.OrganizationId, id);
+
+                deleteTasks.Add(clearContainerTask);
+                deleteTasks.Add(deleteTemplateTask);
+            }
+
+            // Execute all deletions in parallel
+            await Task.WhenAll(deleteTasks).ConfigureAwait(false);
+
+            // Notify deleted template users
+            await this.documentService.NotifyDeletedTemplateUsers(allAccessRights, new Uri(baseUrl), this.hubContext, this.teamManagement).ConfigureAwait(false);
+
+            // Log delete activity asynchronously
+            _ = this.templateService.LogDeleteUserActivityAsync(allAccessRights, this.orgActivityService).ConfigureAwait(false);
+
+            return this.Ok("Success");
+        }
+
+        return this.BadRequest("Failure");
+    }
+    catch (Exception ex)
+    {
+        // Log exception (if logging is available)
+        return this.BadRequest("Failure");
+    }
+}
