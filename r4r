@@ -1,0 +1,162 @@
+[HttpDelete]
+[Authorize]
+[PolicyValidation(PolicyStatus = PolicyStatus.Internally)]
+public async Task<ActionResult> DeleteTemplates(
+    [GuidArray(ErrorMessage = ValidationMessages.ValidDocumentId)]
+    [Required(ErrorMessage = ValidationMessages.Required)]
+    string[] templateIds)
+{
+    try
+    {
+        if (templateIds == null || templateIds.Length == 0 || templateIds.Contains(string.Empty))
+        {
+            return BadRequest("Failure");
+        }
+
+        var tuple = await PermissionAuthorizationHandler.GetResourceOwnerAllowedGroups(
+            this.userDataService, 
+            this.HttpContext, 
+            Permissions.TemplateResources, 
+            this.cacheService, 
+            this.teamManagement, 
+            this.apiRequestService).ConfigureAwait(false);
+
+        var permissionList = await new AccessRightsReader(this.HttpContext, null, this.apiRequestService)
+            .GetPermissionsListAsync(this.userDataService, this.cacheService)
+            .ConfigureAwait(false);
+
+        var groupData = await this.teamManagement.GetTeamListAsync(this.userDataService).ConfigureAwait(false);
+        this.HttpContext.Items.TryAdd(DocumentDetailsReader.TeamListCache, groupData);
+
+        // Execute deletion tasks in parallel
+        var deleteTasks = templateIds.ToDictionary(
+            id => id,
+            id => this.templateService.DeleteTemplateItem(id, this.User, this.authorizationService, this.documentService, this.userDataService, permissionList, tuple.Item1)
+        );
+
+        await Task.WhenAll(deleteTasks.Values).ConfigureAwait(false);
+
+        // Filter success and failed deletions
+        var successIds = deleteTasks.Where(x => x.Value.Result == true).Select(x => x.Key).ToArray();
+        var failedDeletions = deleteTasks.Any(x => x.Value.Result == null);
+
+        if (failedDeletions)
+        {
+            return Forbid();
+        }
+
+        return deleteTasks.All(x => x.Value.Result == true) 
+            ? Ok("Success") 
+            : BadRequest(ExceptionMessages.DeleteTemplateDrafts);
+    }
+    catch (CosmosException ex) when (ex.StatusCode.ToString().ToUpperInvariant() == this.documentService.DocumentClientNotFoundException)
+    {
+        return BadRequest("Failure");
+    }
+}
+deleteYesBtn() {
+  this.$nuxt.$spinner.show(true);
+  const gridObj = this.$refs.grid1.ej2Instances;
+  const selectedRecords: any[] = gridObj.getSelectedRecords();
+
+  if (!selectedRecords.length) {
+    this.$nuxt.$spinner.show(false);
+    return;
+  }
+
+  const documentName = selectedRecords[0].messageTitle;
+  const successContent = this.$nuxt.$t('toast.deleteTempPermanentSuccessToastTittle', { documentName });
+  const failureContent = this.$nuxt.$t('toast.deleteTempPermanentFailureToastTittle', { documentName });
+
+  const ids: string[] = selectedRecords.map(item => item.documentId);
+  this.onNewNotificationReceived();
+  this.$data.deleteDialogVisible = false;
+
+  // Handle draft template deletion separately
+  if (isStatusMatch(this.$nuxt.$route, ['drafts'])) {
+    this.$api.template
+      .deleteDraftTemplate(ids)
+      .then(() => {
+        this.selectedDocumentsCount = 0;
+        this.checkState = false;
+        this.hideSelectedItems(selectedRecords);
+        this.scheduleGridRefresh();
+        this.$nuxt.$toastService.show(successContent, 'bs_toast_success', 'bs_delete_toast');
+      })
+      .catch(() => {
+        this.$nuxt.$toastService.show(failureContent, 'bs_toast_failure', 'bs_delete_toast');
+      })
+      .finally(() => {
+        this.$nuxt.$spinner.show(false);
+      });
+  } else {
+    console.log("merge delete");
+    // Use the merged delete API call
+    this.$api.template.deletemergeTemplate(ids)
+      .then(() => {
+        this.selectedDocumentsCount = 0;
+        this.checkState = false;
+        this.hideSelectedItems(selectedRecords);
+        this.scheduleGridRefresh();
+        this.$nuxt.$toastService.show(successContent, 'bs_toast_success', 'bs_delete_toast');
+      })
+      .catch(() => {
+        this.$nuxt.$toastService.show(failureContent, 'bs_toast_failure', 'bs_delete_toast');
+      })
+      .finally(() => {
+        this.$nuxt.$spinner.show(false);
+      });
+  }
+
+  this.isToolbar = false;
+}
+deletemergeTemplate(templateIds: string[]) {
+  return $axios.$delete('/Template/DeleteTemplates/', {
+    params: { templateId: templateIds },
+    paramsSerializer: params => paramsSerializer(params),
+  });
+}
+deletemergeTemplate(templateIds: string[]) {
+  return $axios.$delete('/Template/DeleteTemplates/', {
+    params: { templateId: templateIds },  // Ensure array is correctly passed
+    paramsSerializer: params => {
+      return new URLSearchParams(params).toString(); // Correct serialization of array
+    },
+  });
+}
+[HttpDelete]
+[Authorize]
+[PolicyValidation(PolicyStatus = PolicyStatus.Internally)]
+public async Task<ActionResult> DeleteTemplates(
+    [FromQuery] [GuidArray(ErrorMessage = ValidationMessages.ValidDocumentId)]
+    [Required(ErrorMessage = ValidationMessages.Required)]
+    string[] templateId)
+{
+    try
+    {
+        if (templateId == null || templateId.Length == 0 || templateId.Contains(string.Empty))
+        {
+            return BadRequest("Failure");
+        }
+
+        var deleteTasks = templateId.ToDictionary(
+            id => id,
+            id => this.templateService.DeleteTemplateItem(
+                id, this.User, this.authorizationService, 
+                this.documentService, this.userDataService, 
+                permissionList, tuple.Item1)
+        );
+
+        await Task.WhenAll(deleteTasks.Values).ConfigureAwait(false);
+
+        var successIds = deleteTasks.Where(x => x.Value.Result == true).Select(x => x.Key).ToArray();
+
+        return deleteTasks.All(x => x.Value.Result == true) 
+            ? Ok("Success") 
+            : BadRequest(ExceptionMessages.DeleteTemplateDrafts);
+    }
+    catch (CosmosException ex) when (ex.StatusCode.ToString().ToUpperInvariant() == this.documentService.DocumentClientNotFoundException)
+    {
+        return BadRequest("Failure");
+    }
+}
