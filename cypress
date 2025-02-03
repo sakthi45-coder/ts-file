@@ -1,0 +1,59 @@
+/// <reference types="Cypress" />
+import '../../support/commands';
+import {} from '../../utility/main-app-actions';
+const baseUrl = Cypress.config('baseUrl');
+
+describe('Delete template with Merge & Use dropdown', { testIsolation: false }, () => {
+  before(() => {
+    cy.login1(); // Ensure you're logged in
+  });
+
+  beforeEach(() => {
+    cy.intercept('POST', '/Template/GetTemplates').as('gettemplates'); // Intercept the template loading API call
+  });
+
+  it('Select and delete multiple templates', () => {
+    cy.visit(baseUrl + 'templates/alltemplates/'); // Navigate to "All Templates"
+    cy.wait('@gettemplates').then(() => {
+      // Select multiple templates using checkboxes
+      cy.get('#temp-grid', { timeout: 5000 }) // Wait for template grid to load
+        .find('[aria-rowindex="1"]') // Adjust to the correct row index
+        .find('input[type="checkbox"]') // Find the checkbox for the first row
+        .check();
+
+      cy.get('#temp-grid')
+        .find('[aria-rowindex="2"]') // Adjust to the second row
+        .find('input[type="checkbox"]')
+        .check();
+
+      // Click the "Merge & Use" dropdown and then "Delete"
+      cy.get('.merge-dropdown-button') // Ensure the dropdown button is located correctly
+        .click();
+
+      cy.get('.merge-dropdown-menu') // Locate the dropdown menu
+        .contains('Delete') // Look for the "Delete" option
+        .click();
+
+      // Confirm deletion in the dialog box
+      cy.get('.dialog-box') // Ensure you're targeting the correct dialog box class
+        .contains('Yes, delete') // Look for the confirm button text
+        .click();
+    });
+  });
+
+  it('Check for toast notification', () => {
+    cy.wait(3000); // Wait for the toast notification to appear
+    cy.get('.e-toast-content').should('contain.text', 'Template(s) deleted forever.');
+  });
+
+  it('Check for notification in the sidebar', () => {
+    cy.get('#notificationbar').click(); // Open the notification sidebar
+    cy.get('#notify-sidebar')
+      .find('.notify-message-item')
+      .should('contain.text', 'You have deleted the template');
+    cy.get('#notify-sidebar')
+      .find('.notification-list-header')
+      .find('.close-icon')
+      .click(); // Close the notification sidebar
+  });
+});
