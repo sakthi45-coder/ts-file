@@ -1,0 +1,34 @@
+[Test]
+public async Task DeleteTemplates_ShouldReturnOk_WhenAllDeletionsSucceed()
+{
+    // Arrange
+    var mockTemplateService = new Mock<ITemplateService>();
+    var mockHttpContextAccessor = new Mock<IHttpContextAccessor>();
+    var mockDocumentService = new Mock<IDocumentService>();
+    var mockUserDataService = new Mock<IUserDataService>();
+    var mockAuthorizationService = new Mock<IAuthorizationService>();
+
+    var controller = new TemplateController(
+        mockTemplateService.Object, 
+        mockHttpContextAccessor.Object, 
+        mockDocumentService.Object, 
+        mockUserDataService.Object, 
+        mockAuthorizationService.Object
+    );
+
+    string[] templateIds = { "template1", "template2" };
+
+    mockTemplateService
+        .Setup(service => service.DeleteTemplatesItem(It.IsAny<string>(), It.IsAny<ClaimsPrincipal>(), 
+            It.IsAny<IAuthorizationService>(), It.IsAny<IDocumentService>(), 
+            It.IsAny<UserDataService>(), It.IsAny<PermissionsList>(), It.IsAny<List<string>>()))
+        .ReturnsAsync(true);
+
+    // Act
+    var result = await controller.DeleteTemplates(templateIds);
+
+    // Assert
+    Assert.IsInstanceOf<OkObjectResult>(result);
+    var okResult = result as OkObjectResult;
+    Assert.AreEqual("Success", okResult?.Value);
+}
