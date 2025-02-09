@@ -1,0 +1,40 @@
+[Category("DeleteDraftsTemplate")]
+[Test]
+public async Task DeleteDraftsTemplatePolicySuccess()
+{
+    string rawJson = System.IO.File.ReadAllText(@"template.json");
+    List<AccessRightsDetails> accessRightsDetailsList = JsonConvert.DeserializeObject<List<AccessRightsDetails>>(rawJson);
+
+    var accessDetails = accessRightsDetailsList.FirstOrDefault(f => f.DocumentId == "1dff9b4a-323e-49ed-9355-e382770c1876");
+    var responseTask = Task.FromResult(accessDetails);
+
+    var documentClientMock = new Mock<CosmosClient>();
+
+    Mock<IDocumentAccessRightsService> controllerContextMock = new Mock<IDocumentAccessRightsService>();
+    controllerContextMock.Setup(foo => foo.GetAccessRightsDetailsAsync(It.IsAny<IElasticClient>(), It.IsAny<string>(), It.IsAny<string>())).Returns(responseTask);
+
+    Mock<CloudStorage> cloudStorageMock = new Mock<CloudStorage>();
+
+    var templateService = new TemplateService(this.elasticClient, this.cacheService, teamManagement, contextAccessor, mapper, apiRequestServiceMock.Object, this.documentContentServiceMock.Object);
+    var documentService = new DocumentService(controllerContextMock.Object, this.elasticClient, this.userDataService, cloudStorageMock.Object, this.authorizationService, teamManagement, userManagement, decisionTableExecutor, this.documentContentService, this.documentAuditLog, this.cacheService, this.notificationHub, this.emailHandler, this.extendedDocumentDetailsService, this.contextAccessor, this.databaseContext, this.deleteAccountService, this.webhookEventService, this.scheduleJobDetails, apiRequestServiceMock.Object, new Mock<IOrgActivityService>().Object, bulkDocumentAccessServiceMock.Object);
+
+    var mockAuthorization = new Mock<IAuthorizationService>();
+    mockAuthorization.Setup(x => x.AuthorizeAsync(It.IsAny<ClaimsPrincipal>(), It.IsAny<object>(), It.IsAny<string>()))
+        .Returns(Task.FromResult(AuthorizationResult.Success()));
+
+    var templateController = new TemplateController(userDataService, userManagement, templateService, documentService, mockAuthorization.Object, controllerContextMock.Object, notificationHub, null, mapper, teamManagement, requestDetailsService, this.cacheService, apiRequestServiceMock.Object);
+    
+    Dictionary<string, StringValues> queryCollection = new Dictionary<string, StringValues>
+    {
+        { "documentid", new StringValues("1dff9b4a-323e-49ed-9355-e382770c1876") }
+    };
+    
+    QueryCollection query = new QueryCollection(queryCollection);
+    templateController.ControllerContext.HttpContext = new DefaultHttpContext() { User = user };
+    templateController.ControllerContext.HttpContext.Request.Query = query;
+    contextAccessor.HttpContext = templateController.ControllerContext.HttpContext;
+
+    var result = await templateController.DeleteDraftsTemplate(new string[] { "1dff9b4a-323e-49ed-9355-e382770c1876" }).ConfigureAwait(false);
+
+    ClassicAssert.IsInstanceOf<OkResult>(result); // Expecting successful deletion
+}
