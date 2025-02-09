@@ -1,0 +1,212 @@
+[Category("DeleteMultipleTemplate")]
+[Test]
+public async Task DeleteMultipleTemplates()
+{
+    // Step 1: Read template IDs from JSON file
+    string rawJson = System.IO.File.ReadAllText(@"templateIds.json");
+    List<string> templateIds = JsonConvert.DeserializeObject<List<string>>(rawJson);
+    
+    // Mock services
+    var templateService = new TemplateService(
+        this.elasticClient, 
+        this.cacheService, 
+        teamManagement, 
+        contextAccessor, 
+        mapper, 
+        apiRequestServiceMock.Object, 
+        this.documentContentServiceMock.Object);
+
+    var documentServiceMock = new Mock<IDocumentService>();
+    var templateServiceMock = new Mock<ITemplateService>();
+
+    // Track deleted template IDs
+    List<string> deletedTemplates = new List<string>();
+
+    // Step 2: Mock DeleteTemplateItem to delete templates instead of throwing an exception
+    templateServiceMock.Setup(x => x.DeleteTemplateItem(
+        It.IsAny<string>(), 
+        It.IsAny<ClaimsPrincipal>(), 
+        It.IsAny<IAuthorizationService>(), 
+        It.IsAny<IDocumentService>(),
+        It.IsAny<UserDataService>(), 
+        It.IsAny<PermissionsList>(), 
+        It.IsAny<List<string>>()))
+    .Callback((string templateId, ClaimsPrincipal user, IAuthorizationService auth, IDocumentService docService, 
+               UserDataService userDataService, PermissionsList permissions, List<string> docIds) => 
+    {
+        deletedTemplates.Add(templateId);
+    })
+    .Returns(Task.CompletedTask);
+
+    var templateController = new TemplateController(
+        userDataService,
+        userManagement,
+        templateServiceMock.Object,
+        documentServiceMock.Object,
+        authorizationService,
+        accessRightsServices,
+        notificationHub,
+        orgActivityService,
+        mapper,
+        teamManagement,
+        requestDetailsService,
+        this.cacheService,
+        apiRequestServiceMock.Object);
+
+    // Mock HTTP context and permissions
+    PermissionsList permissionsList = new PermissionsList()
+    {
+        Allow = new List<ViewPermissionDetails>()
+        {
+            new ViewPermissionDetails()
+            {
+                ResourceType = "Document",
+                Scope = Permissions.SpecificResource,
+                Resource = Guid.NewGuid().ToString(),
+                PermissionAccess = new List<PermissionAccess>()
+                {
+                    new PermissionAccess() { CanDelete = true, CanWrite = true, CanView = true }
+                }
+            }
+        },
+        Deny = new List<ViewPermissionDetails>(),
+    };
+
+    var queryCollection = new Dictionary<string, StringValues>
+    {
+        { "documentId", new StringValues(Guid.NewGuid().ToString()) }
+    };
+    var query = new QueryCollection(queryCollection);
+
+    templateController.ControllerContext.HttpContext = new DefaultHttpContext() { User = user };
+    templateController.ControllerContext.HttpContext.Request.Query = query;
+    templateController.ControllerContext.HttpContext.Items.Add(Permissions.PermissionListConst, permissionsList);
+
+    cache.As<IDistributedCache>().Setup(x => x.GetAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+        .Returns(Task.FromResult(BinarySerializer.Serialize(permissionsList)));
+
+    contextAccessor.HttpContext = templateController.ControllerContext.HttpContext;
+
+    // Step 3: Call DeleteTemplates with template IDs from JSON
+    var result = await templateController.DeleteTemplates(templateIds.ToArray()).ConfigureAwait(false);
+
+    // Step 4: Validate the result and ensure templates were deleted
+    ClassicAssert.IsInstanceOf<OkObjectResult>(result); // Expecting success response
+    ClassicAssert.AreEqual(templateIds.Count, deletedTemplates.Count); // Ensure all IDs were deleted
+    ClassicAssert.IsTrue(templateIds.All(id => deletedTemplates.Contains(id))); // Ensure correct IDs were deleted
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+[Category("DeleteMultipleTemplate")]
+[Test]
+public async Task DeleteMultipleTemplatNotFoundException()
+{
+    // Step 1: Read template IDs from JSON
+    string rawJson = System.IO.File.ReadAllText(@"templateIds.json");
+    List<string> templateIds = JsonConvert.DeserializeObject<List<string>>(rawJson);
+
+    var templateService = new TemplateService(
+        this.elasticClient, 
+        this.cacheService, 
+        teamManagement, 
+        contextAccessor, 
+        mapper, 
+        apiRequestServiceMock.Object, 
+        this.documentContentServiceMock.Object);
+
+    var cosmosException = new CosmosException(default, HttpStatusCode.NotFound, default, default, default);
+
+    var documentServiceMock = new Mock<IDocumentService>();
+    documentServiceMock.Setup(x => x.DocumentClientNotFoundException).Returns("NOTFOUND");
+
+    var templateServiceMock = new Mock<TemplateService>(
+        this.elasticClient, 
+        this.cacheService, 
+        teamManagement, 
+        contextAccessor, 
+        mapper, 
+        apiRequestServiceMock.Object);
+    
+    templateServiceMock.Setup(x => x.DeleteTemplateItem(
+        It.IsAny<string>(), 
+        It.IsAny<ClaimsPrincipal>(), 
+        It.IsAny<IAuthorizationService>(), 
+        It.IsAny<IDocumentService>(),
+        It.IsAny<UserDataService>(), 
+        It.IsAny<PermissionsList>(), 
+        It.IsAny<List<string>>()))
+    .ThrowsAsync(cosmosException);
+
+    var templateController = new TemplateController(
+        userDataService,
+        userManagement,
+        templateService,
+        documentServiceMock.Object,
+        authorizationService,
+        accessRightsServices,
+        notificationHub,
+        orgActivityService,
+        mapper,
+        teamManagement,
+        requestDetailsService,
+        this.cacheService,
+        apiRequestServiceMock.Object);
+
+    PermissionsList permissionsList = new PermissionsList()
+    {
+        Allow = new List<ViewPermissionDetails>()
+        {
+            new ViewPermissionDetails()
+            {
+                ResourceType = "Document",
+                Scope = Permissions.SpecificResource,
+                Resource = Guid.NewGuid().ToString(),
+                PermissionAccess = new List<PermissionAccess>()
+                {
+                    new PermissionAccess()
+                    {
+                        CanDelete = true,
+                        CanWrite = true,
+                        CanView = true,
+                    }
+                }
+            }
+        },
+        Deny = new List<ViewPermissionDetails>(),
+    };
+
+    var queryCollection = new Dictionary<string, StringValues>
+    {
+        { "documentId", new StringValues(Guid.NewGuid().ToString()) }
+    };
+    var query = new QueryCollection(queryCollection);
+
+    templateController.ControllerContext.HttpContext = new DefaultHttpContext() { User = user };
+    templateController.ControllerContext.HttpContext.Request.Query = query;
+
+    templateController.ControllerContext.HttpContext.Items.Add(Permissions.PermissionListConst, permissionsList);
+    cache.As<IDistributedCache>().Setup(x => x.GetAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+        .Returns(Task.FromResult(BinarySerializer.Serialize(permissionsList)));
+
+    contextAccessor.HttpContext = templateController.ControllerContext.HttpContext;
+
+    // Step 2: Call DeleteTemplates with template IDs from JSON
+    var result = await templateController.DeleteTemplates(templateIds.ToArray()).ConfigureAwait(false);
+
+    // Step 3: Assert the response
+    ClassicAssert.IsInstanceOf<BadRequestObjectResult>(result);
+}
+
