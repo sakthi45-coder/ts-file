@@ -210,3 +210,91 @@ public async Task DeleteMultipleTemplatNotFoundException()
     ClassicAssert.IsInstanceOf<BadRequestObjectResult>(result);
 }
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+[Test]
+public async Task DeleteMultipleTemplate_Success()
+{
+    var templateServiceMock = new Mock<TemplateService>(this.elasticClient, this.cacheService, teamManagement, contextAccessor, mapper, apiRequestServiceMock.Object);
+    var documentServiceMock = new Mock<IDocumentService>();
+
+    templateServiceMock
+        .Setup(x => x.DeleteTemplateItem(It.IsAny<string>(), It.IsAny<ClaimsPrincipal>(), It.IsAny<IAuthorizationService>(), 
+            It.IsAny<IDocumentService>(), It.IsAny<UserDataService>(), It.IsAny<PermissionsList>(), It.IsAny<List<string>>()))
+        .Returns(Task.CompletedTask); // Ensure successful deletion
+
+    var templateController = new TemplateController(
+        userDataService,
+        userManagement,
+        templateServiceMock.Object, // Use mocked service
+        documentServiceMock.Object,
+        authorizationService,
+        accessRightsServices,
+        notificationHub,
+        orgActivityService,
+        mapper,
+        teamManagement,
+        requestDetailsService,
+        this.cacheService,
+        apiRequestServiceMock.Object);
+
+    PermissionsList permissionsList = new PermissionsList()
+    {
+        Allow = new List<ViewPermissionDetails>()
+        {
+            new ViewPermissionDetails()
+            {
+                ResourceType = "Document",
+                Scope = Permissions.SpecificResource,
+                Resource = Guid.NewGuid().ToString(),
+                PermissionAccess = new List<PermissionAccess>()
+                {
+                    new PermissionAccess()
+                    {
+                        CanDelete = true,
+                        CanWrite = true,
+                        CanView = true,
+                    }
+                }
+            }
+        },
+        Deny = new List<ViewPermissionDetails>(),
+    };
+
+    var queryCollection = new Dictionary<string, StringValues>
+    {
+        { "documentId", new StringValues(Guid.NewGuid().ToString()) }
+    };
+    var query = new QueryCollection(queryCollection);
+    templateController.ControllerContext.HttpContext = new DefaultHttpContext() { User = user };
+    templateController.ControllerContext.HttpContext.Request.Query = query;
+    templateController.ControllerContext.HttpContext.Items.Add(Permissions.PermissionListConst, permissionsList);
+
+    cache.As<IDistributedCache>()
+         .Setup(x => x.GetAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+         .Returns(Task.FromResult(BinarySerializer.Serialize(permissionsList)));
+
+    contextAccessor.HttpContext = templateController.ControllerContext.HttpContext;
+
+    // **Pass multiple template IDs**
+    var templateIds = new string[] 
+    { 
+        "1dff9b4a-323e-49ed-9355-e382770c1876",
+        "2aab9c6d-4d5e-41f9-b27a-982d69e3f832" // Second template ID
+    };
+
+    var result = await templateController.DeleteTemplates(templateIds).ConfigureAwait(false);
+
+    ClassicAssert.IsInstanceOf<NoContentResult>(result); // Expect success
+}
