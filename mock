@@ -1,0 +1,131 @@
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Security.Claims;
+using System.Threading.Tasks;
+using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Mvc;
+using Microsoft.Extensions.Primitives;
+using Moq;
+using NUnit.Framework;
+
+[TestFixture]
+public class TemplateControllerTests
+{
+    private Mock<ITemplateService> _templateServiceMock;
+    private Mock<IUserDataService> _userDataServiceMock;
+    private Mock<IAuthorizationService> _authorizationServiceMock;
+    private Mock<IDocumentService> _documentServiceMock;
+    private Mock<ICacheService> _cacheServiceMock;
+    private Mock<ITeamManagement> _teamManagementMock;
+    private Mock<IApiRequestService> _apiRequestServiceMock;
+    private TemplateController _templateController;
+
+    [SetUp]
+    public void Setup()
+    {
+        _templateServiceMock = new Mock<ITemplateService>();
+        _userDataServiceMock = new Mock<IUserDataService>();
+        _authorizationServiceMock = new Mock<IAuthorizationService>();
+        _documentServiceMock = new Mock<IDocumentService>();
+        _cacheServiceMock = new Mock<ICacheService>();
+        _teamManagementMock = new Mock<ITeamManagement>();
+        _apiRequestServiceMock = new Mock<IApiRequestService>();
+
+        _templateController = new TemplateController(
+            _userDataServiceMock.Object,
+            _teamManagementMock.Object,
+            _templateServiceMock.Object,
+            _documentServiceMock.Object,
+            _authorizationServiceMock.Object,
+            _cacheServiceMock.Object,
+            _apiRequestServiceMock.Object
+        );
+    }
+
+    [Test]
+    [Category("DeleteTemplates")]
+    public async Task DeleteTemplates_ReturnsOk_WhenAllTemplatesDeletedSuccessfully()
+    {
+        // Arrange
+        string[] templateIds = { "template1", "template2" };
+        _templateServiceMock.Setup(t => t.DeleteTemplatesItem(It.IsAny<string>(), It.IsAny<ClaimsPrincipal>(),
+            It.IsAny<IAuthorizationService>(), It.IsAny<IDocumentService>(), It.IsAny<IUserDataService>(),
+            It.IsAny<PermissionsList>(), It.IsAny<List<string>>()))
+            .ReturnsAsync(true);
+
+        // Act
+        var result = await _templateController.DeleteTemplates(templateIds);
+
+        // Assert
+        Assert.IsInstanceOf<OkObjectResult>(result);
+        var okResult = result as OkObjectResult;
+        Assert.AreEqual("Success", okResult.Value);
+    }
+
+    [Test]
+    [Category("DeleteTemplates")]
+    public async Task DeleteTemplates_ReturnsBadRequest_WhenSomeTemplatesFailToDelete()
+    {
+        // Arrange
+        string[] templateIds = { "template1", "template2" };
+        _templateServiceMock.Setup(t => t.DeleteTemplatesItem(It.IsAny<string>(), It.IsAny<ClaimsPrincipal>(),
+            It.IsAny<IAuthorizationService>(), It.IsAny<IDocumentService>(), It.IsAny<IUserDataService>(),
+            It.IsAny<PermissionsList>(), It.IsAny<List<string>>()))
+            .ReturnsAsync((string id, ClaimsPrincipal user, IAuthorizationService auth, IDocumentService docService,
+                IUserDataService userService, PermissionsList permissions, List<string> teams) => id == "template1");
+
+        // Act
+        var result = await _templateController.DeleteTemplates(templateIds);
+
+        // Assert
+        Assert.IsInstanceOf<BadRequestObjectResult>(result);
+        var badRequestResult = result as BadRequestObjectResult;
+        Assert.AreEqual("One or more templates could not be deleted.", badRequestResult.Value);
+    }
+
+    [Test]
+    [Category("DeleteTemplates")]
+    public async Task DeleteTemplates_ReturnsForbid_WhenAuthorizationFails()
+    {
+        // Arrange
+        string[] templateIds = { "template1", "template2" };
+        _templateServiceMock.Setup(t => t.DeleteTemplatesItem(It.IsAny<string>(), It.IsAny<ClaimsPrincipal>(),
+            It.IsAny<IAuthorizationService>(), It.IsAny<IDocumentService>(), It.IsAny<IUserDataService>(),
+            It.IsAny<PermissionsList>(), It.IsAny<List<string>>()))
+            .ReturnsAsync((bool?)null);
+
+        // Act
+        var result = await _templateController.DeleteTemplates(templateIds);
+
+        // Assert
+        Assert.IsInstanceOf<ForbidResult>(result);
+    }
+
+    [Test]
+    [Category("DeleteTemplates")]
+    public async Task DeleteTemplates_ReturnsBadRequest_WhenTemplateIdIsEmpty()
+    {
+        // Act
+        var result = await _templateController.DeleteTemplates(new string[0]);
+
+        // Assert
+        Assert.IsInstanceOf<BadRequestObjectResult>(result);
+        var badRequestResult = result as BadRequestObjectResult;
+        Assert.AreEqual("Failure", badRequestResult.Value);
+    }
+
+    [Test]
+    [Category("DeleteTemplates")]
+    public async Task DeleteTemplates_ReturnsBadRequest_WhenTemplateIdIsNull()
+    {
+        // Act
+        var result = await _templateController.DeleteTemplates(null);
+
+        // Assert
+        Assert.IsInstanceOf<BadRequestObjectResult>(result);
+        var badRequestResult = result as BadRequestObjectResult;
+        Assert.AreEqual("Failure", badRequestResult.Value);
+    }
+}
