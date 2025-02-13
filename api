@@ -1,0 +1,282 @@
+private async Task ApplyRateLimit(HttpContext context, ClientRequestIdentity identity, RateLimitRule rule, bool isBurstLimit)
+{
+    if (!isBurstLimit)
+    {
+        await this.ProcessRequestAsync(identity, rule, context.RequestAborted).ConfigureAwait(false);
+    }
+
+    var counterId = this.BuildCounterKey(identity, rule);
+    var counter = await this.counterStore.GetAsync(counterId, context.RequestAborted).ConfigureAwait(false);
+    if (counter.HasValue && counter.Value.Count > rule.Limit)
+    {
+        throw new RateLimitReachedException(rule);
+    }
+
+    // Create method-specific rate limit headers
+    var headers = this.GetRateLimitHeaders(counter, rule, context.RequestAborted);
+
+    // Define method-specific limit, remaining, and reset headers
+    var methodEndpoint = RateLimitHelper.GetMethodTypeFromAttribute(context);
+
+    // Default headers for all methods
+    var headerLimit = isBurstLimit ? BurstLimitHeaderLimit : RateLimitHeaderLimit;
+    var headerRemaining = isBurstLimit ? BurstLimitHeaderRemaining : RateLimitHeaderRemaining;
+    var headerReset = isBurstLimit ? BurstLimitHeaderReset : RateLimitHeaderReset;
+
+    // Initialize a dictionary to store remaining counts for each method
+    var remainingValues = new Dictionary<string, int>
+    {
+        { "create", 50 },  // Example value
+        { "update", 50 },  // Example value
+        { "delete", 50 },  // Example value
+        { "list", 50 }     // Example value
+    };
+
+    // Decrement the remaining count for the current method
+    if (remainingValues.ContainsKey(methodEndpoint))
+    {
+        remainingValues[methodEndpoint] -= 1;
+    }
+
+    // Generate the remaining values for the header (in format: create=49, update=49, delete=50, list=50)
+    var remainingHeaderValue = string.Join(",", remainingValues.Select(kv => $"{kv.Key}={kv.Value}"));
+    this.AddHeader(headerRemaining, remainingHeaderValue);
+
+    // Set reset time for all methods to 1 minute from now
+    var resetTimestamp = DateTime.UtcNow.AddMinutes(1).ToString("yyyy-MM-ddTHH:mm:ss.fffffffZ");
+
+    // Generate the reset time for all methods (in format: create=2025-02-11T16:35:37.0075842Z, update=2025-02-11T16:35:37.0075842Z, ...)
+    var resetHeaderValue = string.Join(",", remainingValues.Keys.Select(k => $"{k}={resetTimestamp}"));
+    this.AddHeader(headerReset, resetHeaderValue);
+
+    // Update the counter in your store after decrementing the remaining count
+    var updatedCounter = counter.HasValue ? counter.Value : new RateLimitCounter();
+    updatedCounter.Count = remainingValues[methodEndpoint];  // Update the count for the current method
+    await this.counterStore.SetAsync(counterId, updatedCounter, context.RequestAborted).ConfigureAwait(false);
+
+    // Add the limit header (fixed value)
+    this.AddHeader(headerLimit, headers.Limit);
+}
+
+private void AddHeader(string key, string value)
+{
+    this.responseHeaders.Add(key, value);
+}
+
+
+
+private async Task ApplyRateLimit(HttpContext context, ClientRequestIdentity identity, RateLimitRule rule, bool isBurstLimit)
+{
+    if (!isBurstLimit)
+    {
+        await this.ProcessRequestAsync(identity, rule, context.RequestAborted).ConfigureAwait(false);
+    }
+
+    var counterId = this.BuildCounterKey(identity, rule);
+    var counter = await this.counterStore.GetAsync(counterId, context.RequestAborted).ConfigureAwait(false);
+    if (counter.HasValue && counter.Value.Count > rule.Limit)
+    {
+        throw new RateLimitReachedException(rule);
+    }
+
+    // Create method-specific rate limit headers
+    var headers = this.GetRateLimitHeaders(counter, rule, context.RequestAborted);
+    
+    // Define method-specific limit, remaining, and reset headers
+    var methodEndpoint = RateLimitHelper.GetMethodTypeFromAttribute(context);
+    var headerLimit = isBurstLimit ? BurstLimitHeaderLimit.Replace("MethodName", methodEndpoint) : RateLimitHeaderLimit;
+    var headerRemaining = isBurstLimit ? BurstLimitHeaderRemaining.Replace("MethodName", methodEndpoint) : RateLimitHeaderRemaining;
+    var headerReset = isBurstLimit ? BurstLimitHeaderReset.Replace("MethodName", methodEndpoint) : RateLimitHeaderReset;
+
+    // Modify how the remaining and reset values are set for different methods like 'create', 'update', etc.
+    if (methodEndpoint == "create" || methodEndpoint == "update" || methodEndpoint == "delete" || methodEndpoint == "list")
+    {
+        // For remaining headers, we expect values like: create=29, update=50, delete=50, list=50
+        var remainingValues = new Dictionary<string, int>
+        {
+            { "create", 50 },  // Example value; replace with logic to fetch from your counter
+            { "update", 50 },  // Example value
+            { "delete", 50 },  // Example value
+            { "list", 50 }     // Example value
+        };
+
+        var remainingHeaderValue = string.Join(",", remainingValues.Select(kv => $"{kv.Key}={kv.Value}"));
+        this.AddHeader(headerRemaining, remainingHeaderValue);
+
+        // For reset headers, we expect values like: create=2025-02-11T16:35:37.0075842Z, delete=2025-02-11T16:35:37.0075842Z, etc.
+        var resetTimestamp = DateTime.UtcNow.AddMinutes(30).ToString("yyyy-MM-ddTHH:mm:ss.fffffffZ");  // Example logic for reset time
+        var resetHeaderValue = string.Join(",", remainingValues.Keys.Select(k => $"{k}={resetTimestamp}"));
+        this.AddHeader(headerReset, resetHeaderValue);
+    }
+    else
+    {
+        // Handle non-method-specific rate limits
+        this.AddHeader(headerLimit, headers.Limit);
+        this.AddHeader(headerRemaining, headers.Remaining);
+        this.AddHeader(headerReset, headers.Reset);
+    }
+}
+
+private void AddHeader(string key, string value)
+{
+    this.responseHeaders.Add(key, value);
+}
+
+
+
+
+public class CustomRateLimitMiddleware : ClientRateLimitProcessor
+{
+    private const string BurstLimitHeaderLimit = "X-Burst-{0}-Limit";  // Dynamic method name
+    private const string BurstLimitHeaderRemaining = "X-Burst-{0}-Remaining";
+    private const string BurstLimitHeaderReset = "X-Burst-{0}-Reset";
+    private const string RateLimitHeaderLimit = "X-Rate-Limit-Limit";
+    private const string RateLimitHeaderRemaining = "X-Rate-Limit-Remaining";
+    private const string RateLimitHeaderReset = "X-Rate-Limit-Reset";
+    private readonly RequestDelegate next;
+    private readonly IRateLimitConfiguration config;
+    private readonly ClientRateLimitOptions options;
+    private readonly IRateLimitCounterStore counterStore;
+    private readonly ICounterKeyBuilder counterKeyBuilder;
+    private readonly ImmutableOrderedDictionary<string, string> responseHeaders = new();
+
+    public CustomRateLimitMiddleware(
+        RequestDelegate next,
+        IRateLimitConfiguration config,
+        IOptions<ClientRateLimitOptions> options,
+        IRateLimitCounterStore counterStore,
+        IClientPolicyStore clientPolicyStore,
+        IProcessingStrategy processingStrategy)
+        : base(options.Value, clientPolicyStore, processingStrategy)
+    {
+        this.next = next;
+        this.config = config;
+        this.options = options.Value;
+        this.counterStore = counterStore;
+        this.counterKeyBuilder = new ClientCounterKeyBuilder(options.Value);
+    }
+
+    public async Task Invoke(HttpContext context)
+    {
+        try
+        {
+            // Ensure rate limit headers are added
+            this.options.DisableRateLimitHeaders = false;
+
+            var identity = await this.ResolveIdentityAsync(context).ConfigureAwait(false);
+            await this.ApplyRulesAsync(context, identity, true).ConfigureAwait(false);
+
+            // Apply shared hourly rules
+            var hourlyId = identity.ClientId.Split('_');
+            await this.ApplyRulesAsync(
+                    context,
+                    new ClientRequestIdentity
+                    {
+                        ClientId = hourlyId[0],
+                        ClientIp = identity.ClientIp,
+                        Path = "*",
+                        HttpVerb = "*",
+                    },
+                    false).ConfigureAwait(false);
+
+            // Add response headers
+            foreach (var header in this.responseHeaders.GetItems())
+            {
+                context.Response.Headers[header.Key] = header.Value;
+            }
+
+            // Pass the request to the next middleware
+            await this.next(context).ConfigureAwait(false);
+        }
+        catch (RateLimitReachedException)
+        {
+            context.Response.StatusCode = StatusCodes.Status429TooManyRequests;
+            await context.Response.WriteAsync("Rate limit exceeded").ConfigureAwait(false);
+        }
+        catch (Exception)
+        {
+            context.Response.StatusCode = StatusCodes.Status500InternalServerError;
+            await context.Response.WriteAsync("An error occurred while processing your request").ConfigureAwait(false);
+        }
+    }
+
+    private async Task ApplyRulesAsync(HttpContext context, ClientRequestIdentity identity, bool isBurstLimit)
+    {
+        var rules = await this.GetMatchingRulesAsync(identity, context.RequestAborted).ConfigureAwait(false);
+        if (rules.Any())
+        {
+            foreach (var rule in rules)
+            {
+                await this.ApplyRateLimit(context, identity, rule, isBurstLimit).ConfigureAwait(false);
+            }
+        }
+    }
+
+    private async Task ApplyRateLimit(HttpContext context, ClientRequestIdentity identity, RateLimitRule rule, bool isBurstLimit)
+    {
+        if (!isBurstLimit)
+        {
+            await this.ProcessRequestAsync(identity, rule, context.RequestAborted).ConfigureAwait(false);
+        }
+
+        var counterId = this.BuildCounterKey(identity, rule);
+        var counter = await this.counterStore.GetAsync(counterId, context.RequestAborted).ConfigureAwait(false);
+        if (counter.HasValue && counter.Value.Count > rule.Limit)
+        {
+            throw new RateLimitReachedException(rule);
+        }
+
+        var headers = this.GetRateLimitHeaders(counter, rule, context.RequestAborted);
+
+        var methodEndpoint = RateLimitHelper.GetMethodTypeFromAttribute(context);
+        var headerLimit = isBurstLimit ? string.Format(BurstLimitHeaderLimit, methodEndpoint) : RateLimitHeaderLimit;
+        var headerRemaining = isBurstLimit ? string.Format(BurstLimitHeaderRemaining, methodEndpoint) : RateLimitHeaderRemaining;
+        var headerReset = isBurstLimit ? string.Format(BurstLimitHeaderReset, methodEndpoint) : RateLimitHeaderReset;
+
+        // Add headers for burst rate limiting
+        this.AddHeader(headerLimit, headers.Limit);
+        this.AddHeader(headerRemaining, headers.Remaining);
+        this.AddHeader(headerReset, headers.Reset);
+    }
+
+    private async Task<ClientRequestIdentity> ResolveIdentityAsync(HttpContext context)
+    {
+        string clientId = "anon";
+        if (this.config.ClientResolvers?.Any() == true)
+        {
+            var clientIdTasks = this.config.ClientResolvers.Select(resolver => resolver.ResolveClientAsync(context));
+            var clientIds = await Task.WhenAll(clientIdTasks).ConfigureAwait(false);
+            clientId = clientIds.FirstOrDefault(id => !string.IsNullOrEmpty(id)) ?? "anon";
+        }
+
+        var methodEndpoint = RateLimitHelper.GetMethodTypeFromAttribute(context);
+
+        return new ClientRequestIdentity
+        {
+            ClientId = clientId,
+            ClientIp = "anon",
+            Path = methodEndpoint,
+            HttpVerb = context.Request.Method.ToLowerInvariant(),
+        };
+    }
+
+    private string BuildCounterKey(ClientRequestIdentity requestIdentity, RateLimitRule rule)
+    {
+        var key = this.counterKeyBuilder.Build(requestIdentity, rule);
+
+        if (this.options.EnableEndpointRateLimiting && this.config.EndpointCounterKeyBuilder != null)
+        {
+            key += this.config.EndpointCounterKeyBuilder.Build(requestIdentity, rule);
+        }
+
+        using var sha1 = SHA1.Create();
+        var hashBytes = sha1.ComputeHash(Encoding.UTF8.GetBytes(key));
+        return Convert.ToBase64String(hashBytes);
+    }
+
+    private void AddHeader(string key, string value)
+    {
+        this.responseHeaders.Add(key, value);
+    }
+}
+
