@@ -1,0 +1,35 @@
+   var readIdentity = new ClientRequestIdentity
+    {
+        ClientId = identity.ClientId,
+        ClientIp = identity.ClientIp,
+        HttpVerb = "GET", // Read action
+        Path = "read"     // or whatever path corresponds to 'Read'
+    };
+    await ApplyRulesAsync(context, readIdentity, true).ConfigureAwait(false);
+
+    var writeIdentity = new ClientRequestIdentity
+    {
+        ClientId = identity.ClientId,
+        ClientIp = identity.ClientIp,
+        HttpVerb = "POST", // Write action
+        Path = "write"    // or whatever path corresponds to 'Write'
+    };
+    await ApplyRulesAsync(context, writeIdentity, true).ConfigureAwait(false);
+
+    var createIdentity = new ClientRequestIdentity
+    {
+        ClientId = identity.ClientId,
+        ClientIp = identity.ClientIp,
+        HttpVerb = "POST", // Create action
+        Path = "create"   // or whatever path corresponds to 'Create'
+    };
+    await ApplyRulesAsync(context, createIdentity, true).ConfigureAwait(false);
+
+    var deleteIdentity = new ClientRequestIdentity
+    {
+        ClientId = identity.ClientId,
+        ClientIp = identity.ClientIp,
+        HttpVerb = "DELETE", // Delete action
+        Path = "delete"     // or whatever path corresponds to 'Delete'
+    };
+    await ApplyRulesAsync(context, deleteIdentity, true).ConfigureAwait(false);
