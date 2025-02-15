@@ -1,0 +1,100 @@
+private async Task<List<ExtendedRateLimitRule>> GetRateLimitRulesFromCache(string id)
+{
+    var cachedData = await this.clientPolicyStore.GetAsync($"{this.options.ClientPolicyPrefix}_{id}");
+
+    if (cachedData is List<ExtendedRateLimitRule> extendedRules)
+    {
+        Console.WriteLine($"Retrieved {extendedRules.Count} rules from cache.");
+        return extendedRules;
+    }
+
+    return new List<ExtendedRateLimitRule>();
+}
+private async Task ApplyRulesAsync(HttpContext context, ClientRequestIdentity identity, bool isBurstLimit)
+{
+    // Fetch rate limit rules from cache
+    var policy = await this.clientPolicyStore.GetAsync($"{this.options.ClientPolicyPrefix}_{identity.ClientId}");
+
+    if (policy == null || policy.Rules is not List<RateLimitRule> rateLimitRules)
+    {
+        return; // No rules found, exit early
+    }
+
+    // Fetch rules from cache with BurstMethod
+    var cachedRules = await this.GetRateLimitRulesFromCache(identity.ClientId);
+
+    // Apply each rule only once with BurstMethod
+    foreach (var extendedRule in cachedRules)
+    {
+        await this.ApplyRateLimit(context, identity, extendedRule.Rule, extendedRule.BurstMethod, isBurstLimit).ConfigureAwait(false);
+    }
+}
+
+
+private async Task ApplyRateLimit(HttpContext context, ClientRequestIdentity identity, RateLimitRule rule, BurstRateLimitMethod? burstMethod, bool isBurstLimit)
+{
+    await this.ProcessRequestAsync(identity, rule, context.RequestAborted).ConfigureAwait(false);
+
+    var counterId = this.BuildCounterKey(identity, rule);
+    var counter = await this.counterStore.GetAsync(counterId, context.RequestAborted).ConfigureAwait(false);
+
+    if (counter.HasValue && counter.Value.Count > rule.Limit)
+    {
+        throw new RateLimitReachedException(rule);
+    }
+
+    var headers = this.GetRateLimitHeaders(counter, rule, context.RequestAborted);
+
+    // Get method name from BurstMethod if available
+    var methodEndpoint = burstMethod?.ToString() ?? RateLimitHelper.GetMethodTypeFromAttribute(context);
+
+    // Adjust headers dynamically
+    var headerLimit = isBurstLimit ? BurstLimitHeaderLimit.Replace("MethodName", methodEndpoint) : RateLimitHeaderLimit;
+    var headerRemaining = isBurstLimit ? BurstLimitHeaderRemaining.Replace("MethodName", methodEndpoint) : RateLimitHeaderRemaining;
+    var headerReset = isBurstLimit ? BurstLimitHeaderReset.Replace("MethodName", methodEndpoint) : RateLimitHeaderReset;
+
+    this.AddHeader(headerLimit, headers.Limit);
+    this.AddHeader(headerRemaining, headers.Remaining);
+    this.AddHeader(headerReset, headers.Reset);
+}
+private async Task ProcessRulesAsync(List<RateLimitRules> rules, string cacheKey)
+{
+    this.options.DisableRateLimitHeaders = true;
+    var result = new List<ExtendedRateLimitRule>();
+
+    foreach (var rule in rules)
+    {
+        if (rule.IsWhiteList)
+        {
+            this.AddToWhitelist(cacheKey);
+            continue;
+        }
+
+        var rateLimitRule = this.mapper.Map<RateLimitRule>(rule);
+
+        // Store BurstMethod with RateLimitRule
+        var extendedRule = new ExtendedRateLimitRule
+        {
+            Rule = rateLimitRule,
+            BurstMethod = rule.BurstMethod // Store BurstMethod here
+        };
+
+        result.Add(extendedRule);
+    }
+
+    System.Console.WriteLine($"Updating cache with {result.Count} rules for Cache Key: {cacheKey}");
+    await this.UpdateRateLimitRules(cacheKey, result).ConfigureAwait(false);
+}
+
+private async Task<List<ExtendedRateLimitRule>> GetRateLimitRulesFromCache(string id)
+{
+    var cachedData = await this.clientPolicyStore.GetAsync($"{this.options.ClientPolicyPrefix}_{id}");
+
+    if (cachedData is List<ExtendedRateLimitRule> extendedRules)
+    {
+        Console.WriteLine($"Retrieved {extendedRules.Count} rules from cache.");
+        return extendedRules;
+    }
+
+    return new List<ExtendedRateLimitRule>();
+}
