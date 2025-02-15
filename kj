@@ -1,0 +1,123 @@
+public async Task OnActionExecutionAsync(ActionExecutingContext context, ActionExecutionDelegate next)
+{
+    var httpContext = context.HttpContext;
+    HandleEnvironmentClaim(context);
+    var userDataService = new UserDataService(httpContext);
+    var mode = userDataService.Environment == ApplicationEnvironment.Test ? Mode.Test : Mode.Live;
+    var endpoint = RateLimitHelper.GetMethodTypeFromAttribute(httpContext);
+    var cacheKey = GetCacheKey(userDataService, mode);
+    var key = cacheKey + "_" + endpoint;
+
+    var cacheExists = await this.ExistRateLimitCacheAsync(key).ConfigureAwait(false);
+    var burstLimitCacheExists = await this.ExistRateLimitCacheAsync(key).ConfigureAwait(false);
+    var hourlyLimitCacheExists = await this.ExistRateLimitCacheAsync(cacheKey).ConfigureAwait(false);
+
+    // Define the rate limit rules list (default rules + dynamically fetched rules)
+    var rateLimitRules = new List<RateLimitRules>
+    {
+        new RateLimitRules
+        {
+            Endpoint = "*",
+            Id = Guid.NewGuid(),
+            IsWhiteList = false,
+            Limit = 20,
+            Mode = Mode.Test,
+            Period = "1m",
+            SubscriptionId = "61212c65-2ec4-4928-a2c6-5c1bcb1794a8",
+            BurstMethod = BurstRateLimitMethod.Read,
+        },
+        new RateLimitRules
+        {
+            Endpoint = "*",
+            Id = Guid.NewGuid(),
+            IsWhiteList = false,
+            Limit = 20,
+            Mode = Mode.Test,
+            Period = "1m",
+            SubscriptionId = "61212c65-2ec4-4928-a2c6-5c1bcb1794a8",
+            BurstMethod = BurstRateLimitMethod.Write,
+        },
+        new RateLimitRules
+        {
+            Endpoint = "*",
+            Id = Guid.NewGuid(),
+            IsWhiteList = false,
+            Limit = 20,
+            Mode = Mode.Test,
+            Period = "1m",
+            SubscriptionId = "61212c65-2ec4-4928-a2c6-5c1bcb1794a8",
+            BurstMethod = BurstRateLimitMethod.Create,
+        },
+        new RateLimitRules
+        {
+            Endpoint = "*",
+            Id = Guid.NewGuid(),
+            IsWhiteList = false,
+            Limit = 20,
+            Mode = Mode.Test,
+            Period = "1m",
+            SubscriptionId = "61212c65-2ec4-4928-a2c6-5c1bcb1794a8",
+            BurstMethod = BurstRateLimitMethod.Delete,
+        },
+        new RateLimitRules
+        {
+            Endpoint = "*",
+            Id = Guid.NewGuid(),
+            IsWhiteList = false,
+            Limit = 50,
+            Mode = Mode.Test,
+            Period = "1h",
+            SubscriptionId = "61212c65-2ec4-4928-a2c6-5c1bcb1794a8",
+        },
+    };
+
+    if (!burstLimitCacheExists || !hourlyLimitCacheExists)
+    {
+        var rateLimitConfigurationOption = await this.rateLimitingService.GetRateLimitCacheAsync(userDataService.SubscriptionId.ToGuid()).ConfigureAwait(false);
+
+        if (rateLimitConfigurationOption != null)
+        {
+            // Parse endpoint method (e.g. Read, Write, Create, Delete, etc.)
+            Enum.TryParse(endpoint, true, out BurstRateLimitMethod method);
+
+            var rateLimitRulesToProcess = new List<RateLimitRules>();
+
+            // Get configuration for the endpoint from the rateLimitConfigurationOption
+            var rateLimitConfig = this.GetRateLimitConfigForEndpoint(endpoint, rateLimitConfigurationOption);
+
+            if (!hourlyLimitCacheExists && rateLimitConfigurationOption.Hourly != null)
+            {
+                rateLimitRulesToProcess.Add(this.CreateRateLimitRule(rateLimitRules, rateLimitConfigurationOption.Hourly, method, "1h"));
+            }
+
+            if (!burstLimitCacheExists && rateLimitConfig != null)
+            {
+                rateLimitRulesToProcess.Add(this.CreateRateLimitRule(rateLimitRules, rateLimitConfig, method, "1m"));
+            }
+
+            // Now update the cache with all the rate limit rules
+            await this.UpdateRateLimitRulesInCache(cacheKey, rateLimitRules.Concat(rateLimitRulesToProcess).ToList()).ConfigureAwait(false);
+        }
+        else
+        {
+            // If no custom rate limit configuration, apply default rules
+            List<RateLimitRule> defaultRules = this.GetDefaultRulesForCurrentEnvironment(userDataService);
+            await this.UpdateRateLimitRulesInCache(cacheKey, defaultRules).ConfigureAwait(false);
+        }
+    }
+    else
+    {
+        // If cache exists, no update needed
+        await next().ConfigureAwait(false);
+        return;
+    }
+
+    // Proceed with the next middleware in the pipeline
+    await next().ConfigureAwait(false);
+}
+
+private async Task UpdateRateLimitRulesInCache(string cacheKey, List<RateLimitRules> rateLimitRules)
+{
+    // Assuming you have a method to store these rules in the cache
+    await this.CacheService.SetAsync(cacheKey, rateLimitRules, TimeSpan.FromHours(1)).ConfigureAwait(false);
+}
