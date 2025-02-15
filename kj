@@ -82,17 +82,21 @@ public async Task OnActionExecutionAsync(ActionExecutingContext context, ActionE
 
             var rateLimitRulesToProcess = new List<RateLimitRules>();
 
-            // Get configuration for the endpoint from the rateLimitConfigurationOption
-            var rateLimitConfig = this.GetRateLimitConfigForEndpoint(endpoint, rateLimitConfigurationOption);
-
-            if (!hourlyLimitCacheExists && rateLimitConfigurationOption.Hourly != null)
+            // Loop through each BurstRateLimitMethod (Read, Write, Create, Delete) and dynamically add rules
+            foreach (var methodType in Enum.GetValues(typeof(BurstRateLimitMethod)).Cast<BurstRateLimitMethod>())
             {
-                rateLimitRulesToProcess.Add(this.CreateRateLimitRule(rateLimitRules, rateLimitConfigurationOption.Hourly, method, "1h"));
-            }
+                var rateLimitConfig = this.GetRateLimitConfigForEndpoint(endpoint, rateLimitConfigurationOption);
 
-            if (!burstLimitCacheExists && rateLimitConfig != null)
-            {
-                rateLimitRulesToProcess.Add(this.CreateRateLimitRule(rateLimitRules, rateLimitConfig, method, "1m"));
+                // If there's a specific configuration for the method, add it to the list
+                if (!hourlyLimitCacheExists && rateLimitConfigurationOption.Hourly != null)
+                {
+                    rateLimitRulesToProcess.Add(this.CreateRateLimitRule(rateLimitRules, rateLimitConfigurationOption.Hourly, methodType, "1h"));
+                }
+
+                if (!burstLimitCacheExists && rateLimitConfig != null)
+                {
+                    rateLimitRulesToProcess.Add(this.CreateRateLimitRule(rateLimitRules, rateLimitConfig, methodType, "1m"));
+                }
             }
 
             // Now update the cache with all the rate limit rules
