@@ -1,0 +1,109 @@
+public async Task Invoke(HttpContext context)
+{
+    try
+    {
+        this.options.DisableRateLimitHeaders = true;
+        var identity = await this.ResolveIdentityAsync(context).ConfigureAwait(false);
+        var minId = identity.ClientId.Split('_')[0] + "_all";
+
+        var policy = await this.clientPolicyStore.GetAsync($"{this.options.ClientPolicyPrefix}_{minId}");
+        if (policy == null)
+        {
+            await this.next(context).ConfigureAwait(false);
+            return;
+        }
+
+        // Get method type from context
+        var methodEndpoint = RateLimitHelper.GetMethodTypeFromAttribute(context);
+
+        // Apply rate limits for min rules
+        foreach (var rule in policy.Rules)
+        {
+            await this.ApplyRateLimit(context, identity, rule, methodEndpoint).ConfigureAwait(false);
+        }
+
+        // Apply shared hourly rules (unchanged logic)
+        var hourlyId = identity.ClientId.Split('_')[0];
+        await this.ApplyRulesAsync(
+            context,
+            new ClientRequestIdentity
+            {
+                ClientId = hourlyId,
+                ClientIp = identity.ClientIp,
+                Path = "*",
+                HttpVerb = "*",
+            },
+            false).ConfigureAwait(false);
+
+        // Add headers
+        foreach (var header in this.responseHeaders.GetItems())
+        {
+            context.Response.Headers[header.Key] = header.Value;
+        }
+
+        await this.next(context).ConfigureAwait(false);
+    }
+    catch (RateLimitReachedException)
+    {
+        context.Response.StatusCode = StatusCodes.Status429TooManyRequests;
+        await context.Response.WriteAsync("Rate limit exceeded").ConfigureAwait(false);
+    }
+    catch (Exception)
+    {
+        context.Response.StatusCode = StatusCodes.Status500InternalServerError;
+        await context.Response.WriteAsync("An error occurred while processing your request").ConfigureAwait(false);
+    }
+}
+
+private async Task ApplyRateLimit(HttpContext context, ClientRequestIdentity identity, RateLimitRule rule, string methodEndpoint)
+{
+    var counterId = this.BuildCounterKey(identity, rule);
+    var counter = await this.counterStore.GetAsync(counterId, context.RequestAborted).ConfigureAwait(false);
+
+    if (!counter.HasValue)
+    {
+        counter = new RateLimitCounter
+        {
+            Timestamp = DateTime.UtcNow,
+            Count = 0
+        };
+    }
+
+    // Check if the limit is exceeded for this specific method
+    if (counter.Value.Count >= rule.Limit)
+    {
+        throw new RateLimitReachedException(rule);
+    }
+
+    // Update counter only for the specific method type
+    counter = new RateLimitCounter
+    {
+        Timestamp = counter.Value.Timestamp,
+        Count = counter.Value.Count + 1
+    };
+
+    await this.counterStore.SetAsync(counterId, counter, TimeSpan.FromMinutes(1));
+
+    // Generate remaining limits dynamically
+    var remainingLimits = new Dictionary<string, int>
+    {
+        { "create", rule.Limit },
+        { "update", rule.Limit },
+        { "delete", rule.Limit },
+        { "list", rule.Limit }
+    };
+
+    remainingLimits[methodEndpoint] = rule.Limit - counter.Value.Count;
+
+    var headers = new Dictionary<string, string>
+    {
+        ["X-Burst-Limit-Limit"] = "1m",
+        ["X-Burst-Limit-Remaining"] = string.Join(", ", remainingLimits.Select(kv => $"{kv.Key}={kv.Value}")),
+        ["X-Burst-Limit-Reset"] = $"{methodEndpoint}={counter.Value.Timestamp.AddMinutes(1):o}"
+    };
+
+    foreach (var header in headers)
+    {
+        this.AddHeader(header.Key, header.Value);
+    }
+}
