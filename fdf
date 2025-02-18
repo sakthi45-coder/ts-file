@@ -1,0 +1,25 @@
+if (!resetTimes.ContainsKey(methodEndpoint))
+{
+    var mainRule = rules.FirstOrDefault(r => r.Endpoint == methodEndpoint);
+    if (mainRule != null)
+    {
+        var mainCounterId = this.BuildCounterKey1(identity, mainRule);
+        var mainCounter = await this.counterStore.GetAsync(mainCounterId, context.RequestAborted).ConfigureAwait(false);
+
+        if (!mainCounter.HasValue)
+        {
+            mainCounter = new RateLimitCounter
+            {
+                Timestamp = DateTime.UtcNow.AddMinutes(1),
+                Count = 0
+            };
+        }
+
+        resetTimes[methodEndpoint] = mainCounter.Value.Timestamp.ToString("o");
+        remainingLimits[methodEndpoint] = (int)Math.Max(0, mainRule.Limit - mainCounter.Value.Count);
+    }
+}
+
+// Now safely use methodEndpoint's reset time for other requests
+resetTimes[rule.Endpoint] = resetTimes[methodEndpoint];
+remainingLimits[rule.Endpoint] = (int)Math.Max(0, rule.Limit - counter.Value.Count);
