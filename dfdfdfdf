@@ -1,0 +1,121 @@
+ if (isBurstLimit)
+    {
+        string period = "1m";
+        var remainingLimits = new Dictionary<string, int>();
+        var resetTimes = new Dictionary<string, string>();
+        DateTime commonResetTime;
+
+        // Cache key for shared reset time
+        var resetCacheKey = $"ResetTime:{identity.ClientId.Split('_')[0]}";
+
+        // Retrieve shared reset time
+        var cachedResetTime = await this.counterStore.GetAsync(resetCacheKey, context.RequestAborted);
+        if (cachedResetTime.HasValue)
+        {
+            commonResetTime = cachedResetTime.Value.Timestamp;
+        }
+        else
+        {
+            // If not set, create a new reset time for all requests (1 min from now)
+            commonResetTime = DateTime.UtcNow.AddMinutes(1);
+            await this.counterStore.SetAsync(resetCacheKey, new RateLimitCounter { Timestamp = commonResetTime, Count = 0 }, TimeSpan.FromMinutes(1));
+        }
+
+        var headers = new RateLimitHeaders();
+        var tempRemainingLimits = new Dictionary<string, int>();
+        var tempResetTimes = new Dictionary<string, string>();
+
+        foreach (var rule in rules)
+        {
+            var counterId = this.BuildCounterKey1(identity, rule);
+            var counter = await this.counterStore.GetAsync(counterId, context.RequestAborted).ConfigureAwait(false);
+
+            if (!counter.HasValue)
+            {
+                counter = new RateLimitCounter { Timestamp = commonResetTime, Count = 0 };
+            }
+
+            DateTime reset;
+            double remaining;
+
+            if (rule.Endpoint == methodEndpoint)
+            {
+                if (DateTime.UtcNow >= commonResetTime)
+                {
+                    counter = new RateLimitCounter
+                    {
+                        Timestamp = DateTime.UtcNow,
+                        Count = 0,
+                    };
+
+                    await this.counterStore.SetAsync(counterId, counter, TimeSpan.FromMinutes(1));
+                }
+                else
+                {
+                    counter = new RateLimitCounter
+                    {
+                        Timestamp = counter.Value.Timestamp,
+                        Count = counter.Value.Count + 1,
+                    };
+
+                    await this.counterStore.SetAsync(counterId, counter, TimeSpan.FromMinutes(1));
+                }
+            }
+
+            // Use common reset time for all requests
+            reset = commonResetTime;
+            remaining = rule.Limit - counter.Value.Count;
+
+            tempResetTimes[rule.Endpoint] = reset.ToString("o");
+            tempRemainingLimits[rule.Endpoint] = (int)Math.Max(0, remaining);
+
+            if (rule.Endpoint == methodEndpoint)
+            {
+                period = rule.Period;
+            }
+        }
+
+        if (!tempResetTimes.ContainsKey(methodEndpoint))
+        {
+            var mainRule = rules.FirstOrDefault(r => r.Endpoint == methodEndpoint);
+            if (mainRule != null)
+            {
+                var mainCounterId = this.BuildCounterKey1(identity, mainRule);
+                var mainCounter = await this.counterStore.GetAsync(mainCounterId, context.RequestAborted).ConfigureAwait(false);
+
+                if (!mainCounter.HasValue)
+                {
+                    mainCounter = new RateLimitCounter
+                    {
+                        Timestamp = commonResetTime,
+                        Count = 0,
+                    };
+                }
+
+                tempResetTimes[methodEndpoint] = mainCounter.Value.Timestamp.ToString("o");
+                tempRemainingLimits[methodEndpoint] = (int)Math.Max(0, mainRule.Limit - mainCounter.Value.Count);
+            }
+        }
+
+        foreach (var rule in rules)
+        {
+            var ruleCounterId = this.BuildCounterKey1(identity, rule);
+            var ruleCounter = await this.counterStore.GetAsync(ruleCounterId, context.RequestAborted).ConfigureAwait(false);
+
+            if (!ruleCounter.HasValue)
+            {
+                ruleCounter = new RateLimitCounter { Timestamp = commonResetTime, Count = 0 };
+            }
+
+            resetTimes[rule.Endpoint] = tempResetTimes[methodEndpoint]; // Ensure methodEndpoint reset time is applied safely
+            remainingLimits[rule.Endpoint] = (int)Math.Max(0, rule.Limit - ruleCounter.Value.Count);
+        }
+
+        var headerLimit = "X-Burst-Limit-Limit";
+        var headerRemaining = "X-Burst-Limit-Remaining";
+        var headerReset = "X-Burst-Limit-Reset";
+
+        this.AddHeader(headerLimit, period);
+        this.AddHeader(headerRemaining, string.Join(", ", remainingLimits.Select(kv => $"{kv.Key}={kv.Value}")));
+        this.AddHeader(headerReset, string.Join(", ", resetTimes.Select(kv => $"{kv.Key}={kv.Value}")));
+    }
