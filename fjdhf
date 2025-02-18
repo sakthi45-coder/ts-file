@@ -1,0 +1,91 @@
+ if (isBurstLimit)
+    {
+        string period = "1m";
+        var remainingLimits = new Dictionary<string, int>();
+        var resetTimes = new Dictionary<string, string>();
+
+        var tempRemainingLimits = new Dictionary<string, int>();
+        var tempResetTimes = new Dictionary<string, int>();
+
+        foreach (var rule in rules)
+        {
+            var counterId = this.BuildCounterKey1(identity, rule);
+            var counter = await this.counterStore.GetAsync(counterId, context.RequestAborted).ConfigureAwait(false);
+
+            if (!counter.HasValue)
+            {
+                counter = new RateLimitCounter
+                {
+                    Timestamp = DateTime.UtcNow,
+                    Count = 0
+                };
+            }
+
+            DateTime reset = counter.Value.Timestamp + (rule.PeriodTimespan ?? rule.Period.ToTimeSpan());
+            double remaining = rule.Limit - counter.Value.Count;
+
+            // Store reset time and remaining count for each endpoint separately
+            tempResetTimes[rule.Endpoint] = (int)(reset - DateTime.UtcNow).TotalSeconds;
+            tempRemainingLimits[rule.Endpoint] = (int)Math.Max(0, remaining);
+
+            if (rule.Endpoint == methodEndpoint)
+            {
+                period = rule.Period;
+
+                // Ensure the reset time is stored only once for this request type
+                if (!resetTimes.ContainsKey(methodEndpoint))
+                {
+                    resetTimes[methodEndpoint] = reset.ToString("o");
+                }
+
+                // Update counter for the current request type
+                if (DateTime.UtcNow >= counter.Value.Timestamp)
+                {
+                    counter = new RateLimitCounter
+                    {
+                        Timestamp = DateTime.UtcNow.AddMinutes(1),
+                        Count = 1, // Reset count for this request type
+                    };
+                }
+                else
+                {
+                    counter = new RateLimitCounter
+                    {
+                        Timestamp = counter.Value.Timestamp,
+                        Count = counter.Value.Count + 1, // Increment count
+                    };
+                }
+
+                await this.counterStore.SetAsync(counterId, counter, TimeSpan.FromMinutes(1));
+            }
+        }
+
+        foreach (var rule in rules)
+        {
+            var ruleCounterId = this.BuildCounterKey1(identity, rule);
+            var ruleCounter = await this.counterStore.GetAsync(ruleCounterId, context.RequestAborted).ConfigureAwait(false);
+
+            if (!ruleCounter.HasValue)
+            {
+                ruleCounter = new RateLimitCounter
+                {
+                    Timestamp = DateTime.UtcNow,
+                    Count = 0
+                };
+            }
+
+            // Assign stored reset times to avoid overwriting
+            resetTimes[rule.Endpoint] = tempResetTimes.ContainsKey(rule.Endpoint) 
+                ? DateTime.UtcNow.AddSeconds(tempResetTimes[rule.Endpoint]).ToString("o") 
+                : DateTime.UtcNow.ToString("o");
+
+            remainingLimits[rule.Endpoint] = tempRemainingLimits.ContainsKey(rule.Endpoint) 
+                ? tempRemainingLimits[rule.Endpoint] 
+                : rule.Limit;
+        }
+
+        // Set headers for burst limit
+        this.AddHeader("X-Burst-Limit-Limit", period);
+        this.AddHeader("X-Burst-Limit-Remaining", string.Join(", ", remainingLimits.Select(kv => $"{kv.Key}={kv.Value}")));
+        this.AddHeader("X-Burst-Limit-Reset", string.Join(", ", resetTimes.Select(kv => $"{kv.Key}={kv.Value}")));
+    }
