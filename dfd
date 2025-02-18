@@ -88,8 +88,17 @@ private async Task ApplyRateLimit(HttpContext context, ClientRequestIdentity ide
         // Now apply the same values to all rules, ensuring correct order
         foreach (var rule in rules)
         {
+            // Process each rule's counter individually
+            var ruleCounterId = this.BuildCounterKey1(identity, rule);
+            var ruleCounter = await this.counterStore.GetAsync(ruleCounterId, context.RequestAborted).ConfigureAwait(false);
+
+            if (!ruleCounter.HasValue)
+            {
+                ruleCounter = new RateLimitCounter { Timestamp = commonResetTime, Count = 0 };
+            }
+
             resetTimes[rule.Endpoint] = tempResetTimes[methodEndpoint]; // Ensure methodEndpoint reset time is applied safely
-            remainingLimits[rule.Endpoint] = (int)Math.Max(0, rule.Limit - counter.Value.Count);
+            remainingLimits[rule.Endpoint] = (int)Math.Max(0, rule.Limit - ruleCounter.Value.Count);
         }
 
         var headerLimit = "X-Burst-Limit-Limit";
