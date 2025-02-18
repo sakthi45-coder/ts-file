@@ -1,0 +1,417 @@
+
+    public class CustomRateLimitMiddleware : ClientRateLimitProcessor
+    {
+        private const string BurstLimitHeaderLimit = "X-Burst-MethodName-Limit";
+        private const string BurstLimitHeaderRemaining = "X-Burst-MethodName-Remaining";
+        private const string BurstLimitHeaderReset = "X-Burst-MethodName-Reset";
+        private const string RateLimitHeaderLimit = "X-Rate-Limit-Limit";
+        private const string RateLimitHeaderRemaining = "X-Rate-Limit-Remaining";
+        private const string RateLimitHeaderReset = "X-Rate-Limit-Reset";
+        private readonly RequestDelegate next;
+        private readonly IRateLimitConfiguration config;
+        private readonly ClientRateLimitOptions options;
+        private readonly IRateLimitCounterStore counterStore;
+        private readonly ICounterKeyBuilder counterKeyBuilder;
+        private readonly IClientPolicyStore clientPolicyStore;
+        // private readonly IRateLimitingService _rateLimitingService;
+        private readonly ImmutableOrderedDictionary<string, string> responseHeaders = new();
+
+        public CustomRateLimitMiddleware(
+            RequestDelegate next,
+            IRateLimitConfiguration config,
+            IOptions<ClientRateLimitOptions> options,
+            IRateLimitCounterStore counterStore,
+            IClientPolicyStore clientPolicyStore,
+            IProcessingStrategy processingStrategy)
+            : base(options.Value, clientPolicyStore, processingStrategy)
+        {
+            this.next = next;
+            this.config = config;
+            this.options = options.Value;
+            this.counterStore = counterStore;
+            this.clientPolicyStore = clientPolicyStore;
+            this.counterKeyBuilder = new ClientCounterKeyBuilder(options.Value);
+            // this._rateLimitingService=rateLimitingService;
+        }
+        public async Task Invoke(HttpContext context)
+        {
+    try
+    {
+        this.responseHeaders.Clear();
+        var userDataService = new UserDataService(context);
+        var mode = userDataService.Environment == ApplicationEnvironment.Test ? Mode.Test : Mode.Live;
+        var checkidentity = await this.ResolveIdentityAsync(context).ConfigureAwait(false);
+        var checkMinId = checkidentity.ClientId.Split('_')[0] + "_all";
+        var checkPolicy = await this.clientPolicyStore.GetAsync($"{this.options.ClientPolicyPrefix}_{checkMinId}");
+        var cacheKey = GetCacheKey(userDataService, mode);
+        var cacheExists = await this.clientPolicyStore.ExistsAsync($"{this.options.ClientPolicyPrefix}_{cacheKey}").ConfigureAwait(false);
+        if (checkPolicy == null)
+        {
+            var rules = new RateLimitRules
+            {
+                Id = Guid.NewGuid(),
+                SubscriptionId = userDataService.SubscriptionId,
+                Mode = mode,
+                IsWhiteList = false,
+            };
+
+            if (rules != null)
+            {
+                var ratelimitRules = new List<RateLimitRules>
+                {
+                    new RateLimitRules
+                    {
+                        Endpoint = "read",
+                        Id = rules.Id,
+                        IsWhiteList = rules.IsWhiteList,
+                        Limit = 30,
+                        Mode = rules.Mode,
+                        Period = "1m",
+                        SubscriptionId = rules.SubscriptionId,
+                        BurstMethod = BurstRateLimitMethod.Read,
+                    },
+                    new RateLimitRules
+                    {
+                        Endpoint = "write",
+                        Id = rules.Id,
+                        IsWhiteList = rules.IsWhiteList,
+                        Limit = 30,
+                        Mode = rules.Mode,
+                        Period = "1m",
+                        SubscriptionId = rules.SubscriptionId,
+                        BurstMethod = BurstRateLimitMethod.Write,
+                    },
+                    new RateLimitRules
+                    {
+                        Endpoint = "create",
+                        Id = rules.Id,
+                        IsWhiteList = rules.IsWhiteList,
+                        Limit = 20,
+                        Mode = rules.Mode,
+                        Period = "1m",
+                        SubscriptionId = rules.SubscriptionId,
+                        BurstMethod = BurstRateLimitMethod.Create,
+                    },
+                    new RateLimitRules
+                    {
+                        Endpoint = "delete",
+                        Id = rules.Id,
+                        IsWhiteList = rules.IsWhiteList,
+                        Limit = 30,
+                        Mode = rules.Mode,
+                        Period = "1m",
+                        SubscriptionId = rules.SubscriptionId,
+                        BurstMethod = BurstRateLimitMethod.Delete,
+                    },
+                    new RateLimitRules
+                    {
+                        Endpoint = "*",
+                        Id = rules.Id,
+                        IsWhiteList = rules.IsWhiteList,
+                        Limit = 50,
+                        Mode = rules.Mode,
+                        Period = "1h",
+                        SubscriptionId = rules.SubscriptionId,
+                    },
+                };
+
+                await ProcessRulesAsync(ratelimitRules, cacheKey).ConfigureAwait(false);
+            }
+            else
+            {
+                List<RateLimitRule> defaultRules = GetDefaultRulesForCurrentEnvironment(userDataService);
+                await UpdateRateLimitRules(cacheKey, defaultRules).ConfigureAwait(false);
+            }
+        }
+        this.options.DisableRateLimitHeaders = true;
+        var identity = await this.ResolveIdentityAsync(context).ConfigureAwait(false);
+        var minId = identity.ClientId.Split('_')[0] + "_all";
+
+        var policy = await this.clientPolicyStore.GetAsync($"{this.options.ClientPolicyPrefix}_{minId}");
+        if (policy != null)
+        {
+        var methodEndpoint = RateLimitHelper.GetMethodTypeFromAttribute(context);
+        var isburstLimit = true;
+        List<RateLimitRule> rule1 = new List<RateLimitRule>();
+        foreach (var rule in policy.Rules)
+        {
+          rule1.Add(rule);
+        }
+
+        await this.ApplyRateLimit(context, identity, rule1, methodEndpoint, isburstLimit).ConfigureAwait(false);
+        }
+
+        // Apply shared hourly rules
+        var hourlyId = identity.ClientId.Split('_')[0];
+        await this.ApplyRulesAsync(
+            context,
+            new ClientRequestIdentity
+            {
+                ClientId = hourlyId,
+                ClientIp = identity.ClientIp,
+                Path = "*",
+                HttpVerb = "*",
+            },
+            false).ConfigureAwait(false);
+
+        foreach (var header in this.responseHeaders.GetItems())
+        {
+            context.Response.Headers[header.Key] = header.Value;
+        }
+
+        await this.next(context).ConfigureAwait(false);
+    }
+    catch (RateLimitReachedException)
+    {
+        context.Response.StatusCode = StatusCodes.Status429TooManyRequests;
+        await context.Response.WriteAsync("Rate limit exceeded").ConfigureAwait(false);
+    }
+    catch (Exception)
+    {
+        context.Response.StatusCode = StatusCodes.Status500InternalServerError;
+        await context.Response.WriteAsync("An error occurred while processing your request").ConfigureAwait(false);
+    }
+}
+
+        private async Task ApplyRulesAsync(HttpContext context, ClientRequestIdentity identity, bool isBurstLimit)
+        {
+            var rules = await this.GetMatchingRulesAsync(identity, context.RequestAborted).ConfigureAwait(false);
+            var policy = await this.clientPolicyStore.GetAsync($"{this.options.ClientPolicyPrefix}_{identity.ClientId}");
+            var methodEndpoint = RateLimitHelper.GetMethodTypeFromAttribute(context);
+            List<RateLimitRule> rule1 = new List<RateLimitRule>();
+            if (rules.Any())
+            {
+                foreach (var rule in rules)
+                {
+                    rule1.Add(rule);
+                }
+
+                await this.ApplyRateLimit(context, identity, rule1, methodEndpoint, isBurstLimit).ConfigureAwait(false);
+            }
+        }
+
+        private async Task ApplyRateLimit(HttpContext context, ClientRequestIdentity identity, List<RateLimitRule> rules, string methodEndpoint, bool isBurstLimit)
+      {
+           if (isBurstLimit)
+           {
+           string period = "1m";
+           var remainingLimits = new Dictionary<string, int>();
+           var resetTimes = new Dictionary<string, string>();
+           DateTime commonResetTime = DateTime.UtcNow.AddMinutes(1);
+           var headers = new RateLimitHeaders();
+           var tempRemainingLimits = new Dictionary<string, int>();
+           var tempResetTimes = new Dictionary<string, string>();
+           foreach (var rule in rules)
+           {
+            var counterId = this.BuildCounterKey1(identity, rule);
+            var counter = await this.counterStore.GetAsync(counterId, context.RequestAborted).ConfigureAwait(false);
+
+            if (!counter.HasValue)
+            {
+                counter = new RateLimitCounter { Timestamp = commonResetTime, Count = 0 };
+            }
+
+            DateTime reset;
+            double remaining;
+
+            if (rule.Endpoint == methodEndpoint)
+            {
+                if (DateTime.UtcNow >= commonResetTime)
+                {
+                    counter = new RateLimitCounter
+                    {
+                        Timestamp = DateTime.UtcNow,
+                        Count = 0,
+                    };
+
+                    await this.counterStore.SetAsync(counterId, counter, TimeSpan.FromMinutes(1));
+                }
+                else
+                {
+                    counter = new RateLimitCounter
+                    {
+                        Timestamp = counter.Value.Timestamp,
+                        Count = counter.Value.Count + 1,
+                    };
+
+                    await this.counterStore.SetAsync(counterId, counter, TimeSpan.FromMinutes(1));
+                }
+            }
+
+            reset = counter.Value.Timestamp + (rule.PeriodTimespan ?? rule.Period.ToTimeSpan());
+            remaining = rule.Limit - counter.Value.Count;
+
+            tempResetTimes[rule.Endpoint] = reset.ToString("o");
+            tempRemainingLimits[rule.Endpoint] = (int)Math.Max(0, remaining);
+
+            if (rule.Endpoint == methodEndpoint)
+            {
+                period = rule.Period;
+            }
+        }
+
+           if (!tempResetTimes.ContainsKey(methodEndpoint))
+           {
+            var mainRule = rules.FirstOrDefault(r => r.Endpoint == methodEndpoint);
+            if (mainRule != null)
+            {
+                var mainCounterId = this.BuildCounterKey1(identity, mainRule);
+                var mainCounter = await this.counterStore.GetAsync(mainCounterId, context.RequestAborted).ConfigureAwait(false);
+
+                if (!mainCounter.HasValue)
+                {
+                    mainCounter = new RateLimitCounter
+                    {
+                        Timestamp = DateTime.UtcNow.AddMinutes(1),
+                        Count = 0,
+                    };
+                }
+
+                tempResetTimes[methodEndpoint] = mainCounter.Value.Timestamp.ToString("o");
+                tempRemainingLimits[methodEndpoint] = (int)Math.Max(0, mainRule.Limit - mainCounter.Value.Count);
+            }
+        }
+
+           foreach (var rule in rules)
+        {
+            // Process each rule's counter individually
+            var ruleCounterId = this.BuildCounterKey1(identity, rule);
+            var ruleCounter = await this.counterStore.GetAsync(ruleCounterId, context.RequestAborted).ConfigureAwait(false);
+
+            if (!ruleCounter.HasValue)
+            {
+                ruleCounter = new RateLimitCounter { Timestamp = commonResetTime, Count = 0 };
+            }
+
+            resetTimes[rule.Endpoint] = tempResetTimes[methodEndpoint]; // Ensure methodEndpoint reset time is applied safely
+            remainingLimits[rule.Endpoint] = (int)Math.Max(0, rule.Limit - ruleCounter.Value.Count);
+        }
+
+        var headerLimit = "X-Burst-Limit-Limit";
+        var headerRemaining = "X-Burst-Limit-Remaining";
+        var headerReset = "X-Burst-Limit-Reset";
+
+        this.AddHeader(headerLimit, period);
+        this.AddHeader(headerRemaining, string.Join(", ", remainingLimits.Select(kv => $"{kv.Key}={kv.Value}")));
+        this.AddHeader(headerReset, string.Join(", ", resetTimes.Select(kv => $"{kv.Key}={kv.Value}")));
+    }
+
+    if (!isBurstLimit)
+    {
+      foreach (var rule in rules)
+            {
+         await this.ProcessRequestAsync(identity, rule, context.RequestAborted).ConfigureAwait(false);
+         var counterId = this.BuildCounterKey(identity, rule);
+         var counter = await this.counterStore.GetAsync(counterId, context.RequestAborted).ConfigureAwait(false);
+         if (counter.HasValue && counter.Value.Count > rule.Limit)
+            {
+                throw new RateLimitReachedException(rule);
+            }
+
+         var headers = this.GetRateLimitHeaders(counter, rule, context.RequestAborted);
+         var methodEndpoint1 = RateLimitHelper.GetMethodTypeFromAttribute(context);
+         var headerLimit = isBurstLimit ? BurstLimitHeaderLimit.Replace("MethodName", methodEndpoint) : RateLimitHeaderLimit;
+         var headerRemaining = isBurstLimit ? BurstLimitHeaderRemaining.Replace("MethodName", methodEndpoint) : RateLimitHeaderRemaining;
+         var headerReset = isBurstLimit ? BurstLimitHeaderReset.Replace("MethodName", methodEndpoint) : RateLimitHeaderReset;
+         this.AddHeader(headerLimit, headers.Limit);
+         this.AddHeader(headerRemaining, headers.Remaining);
+         this.AddHeader(headerReset, headers.Reset);
+        }
+    }
+}
+
+        private async Task<ClientRequestIdentity> ResolveIdentityAsync(HttpContext context)
+        {
+            string clientId = "anon";
+            if (this.config.ClientResolvers?.Any() == true)
+            {
+                var clientIdTasks = this.config.ClientResolvers.Select(resolver => resolver.ResolveClientAsync(context));
+                var clientIds = await Task.WhenAll(clientIdTasks).ConfigureAwait(false);
+                clientId = clientIds.FirstOrDefault(id => !string.IsNullOrEmpty(id)) ?? "anon";
+            }
+
+            var methodEndpoint = RateLimitHelper.GetMethodTypeFromAttribute(context);
+
+            return new ClientRequestIdentity
+            {
+                ClientId = clientId,
+                ClientIp = "anon",
+                Path = methodEndpoint,
+                HttpVerb = context.Request.Method.ToLowerInvariant(),
+            };
+        }
+
+        private string BuildCounterKey(ClientRequestIdentity requestIdentity, RateLimitRule rule)
+        {
+            var key = this.counterKeyBuilder.Build(requestIdentity, rule);
+
+            if (this.options.EnableEndpointRateLimiting && this.config.EndpointCounterKeyBuilder != null)
+            {
+                key += this.config.EndpointCounterKeyBuilder.Build(requestIdentity, rule);
+            }
+
+#pragma warning disable SCS0006 // Weak hashing function
+            using var sha1 = SHA1.Create();
+#pragma warning restore SCS0006 // Weak hashing function
+            var hashBytes = sha1.ComputeHash(Encoding.UTF8.GetBytes(key));
+            return Convert.ToBase64String(hashBytes);
+        }
+
+        private string BuildCounterKey1(ClientRequestIdentity requestIdentity, RateLimitRule rule)
+   {
+    var id=requestIdentity.ClientId.Split('_')[0];
+    var key = $"{id}:{rule.Endpoint}";
+    using var sha1 = SHA1.Create();
+    var hashBytes = sha1.ComputeHash(Encoding.UTF8.GetBytes(key));
+    return Convert.ToBase64String(hashBytes);
+  }
+
+        private void AddHeader(string key, string value)
+        {
+            this.responseHeaders.Add(key, value);
+        }
+          private static string GetCacheKey(UserDataService userDataService, Mode mode)
+    {
+        return $"{mode}{userDataService.SubscriptionId}";
+    }
+       private async Task ProcessRulesAsync(List<RateLimitRules> rules, string cacheKey)
+    {
+        options.DisableRateLimitHeaders = true;
+        var allRateLimitRules = new List<RateLimitRule>();
+
+        foreach (var rule in rules)
+        {
+           if(rule.BurstMethod.HasValue)
+           { 
+            var rateLimitRule = new RateLimitRule
+            {
+                Endpoint = rule.Endpoint,
+                Limit = rule.Limit,
+                Period = rule.Period,
+            };
+
+            allRateLimitRules.Add(rateLimitRule);
+           }
+        }
+
+        if (allRateLimitRules.Any())
+        {
+            await UpdateRateLimitRules(cacheKey + "_all", allRateLimitRules).ConfigureAwait(false);
+        }
+    }
+       private async Task UpdateRateLimitRules(string id, List<RateLimitRule> rateLimitRules)
+    {
+        await clientPolicyStore.SetAsync($"{options.ClientPolicyPrefix}_{id}", new ClientRateLimitPolicy { ClientId = id, Rules = rateLimitRules }).ConfigureAwait(false);
+    }
+
+
+
+
+      Task<bool> ExistsAsync(string id, CancellationToken cancellationToken = default);
+        Task<T> GetAsync(string id, CancellationToken cancellationToken = default);
+        Task RemoveAsync(string id, CancellationToken cancellationToken = default);
+        Task SetAsync(string id, T entry, TimeSpan? expirationTime = null, CancellationToken cancellationToken = default);
+
+
+    }
+}
