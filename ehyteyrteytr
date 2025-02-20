@@ -1,0 +1,5 @@
+if (DateTime.UtcNow >= counter.Timestamp.AddMinutes(1))
+        {
+            counter = new RateLimitCounter { Timestamp = DateTime.UtcNow, Count = 0 };
+            await this.counterStore.SetAsync(counterId, counter, TimeSpan.FromMinutes(1));
+        }
