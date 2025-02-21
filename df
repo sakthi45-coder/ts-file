@@ -1,0 +1,48 @@
+private async Task ApplyRateLimit(HttpContext context, ClientRequestIdentity identity, List<RateLimitRule> rules, string methodEndpoint, bool isBurstLimit)
+{
+    // Iterate through all the burst limit rules and apply them
+    var limitHeaders = new List<string>();
+    var remainingHeaders = new Dictionary<string, int>(); // To store the remaining limits for different operations
+    var resetHeaders = new Dictionary<string, DateTime>(); // To store the reset time for different operations
+
+    // Loop over each rule to apply burst limit headers
+    foreach (var rule in rules)
+    {
+        await this.ProcessRequestAsync(identity, rule, context.RequestAborted).ConfigureAwait(false);
+
+        var counterId = this.BuildCounterKey(identity, rule);
+        var counter = await this.counterStore.GetAsync(counterId, context.RequestAborted).ConfigureAwait(false);
+
+        if (counter.HasValue && counter.Value.Count > rule.Limit)
+        {
+            throw new RateLimitReachedException(rule);
+        }
+
+        var headers = this.GetRateLimitHeaders(counter, rule, context.RequestAborted);
+
+        // Build header keys dynamically for each operation type, e.g., 'create', 'read', 'delete', 'write'
+        var operations = new[] { "create", "read", "delete", "write" };
+
+        foreach (var operation in operations)
+        {
+            var operationLimit = headers.Limit.ContainsKey(operation) ? headers.Limit[operation] : 0;
+            var operationRemaining = headers.Remaining.ContainsKey(operation) ? headers.Remaining[operation] : 0;
+            var operationReset = headers.Reset.ContainsKey(operation) ? headers.Reset[operation] : DateTime.UtcNow;
+
+            limitHeaders.Add($"{operation}={operationLimit}");
+            remainingHeaders[operation] = operationRemaining;
+            resetHeaders[operation] = operationReset;
+        }
+    }
+
+    // Set the headers for the response
+    var methodEndpoint = RateLimitHelper.GetMethodTypeFromAttribute(context);
+    var headerLimit = isBurstLimit ? BurstLimitHeaderLimit.Replace("MethodName", methodEndpoint) : RateLimitHeaderLimit;
+    var headerRemaining = isBurstLimit ? BurstLimitHeaderRemaining.Replace("MethodName", methodEndpoint) : RateLimitHeaderRemaining;
+    var headerReset = isBurstLimit ? BurstLimitHeaderReset.Replace("MethodName", methodEndpoint) : RateLimitHeaderReset;
+
+    // Adding the burst limit headers
+    this.AddHeader(headerLimit, string.Join(", ", limitHeaders));
+    this.AddHeader(headerRemaining, string.Join(", ", remainingHeaders.Select(kv => $"{kv.Key}={kv.Value}")));
+    this.AddHeader(headerReset, string.Join(", ", resetHeaders.Select(kv => $"{kv.Key}={kv.Value:yyyy-MM-ddTHH:mm:ss.fffffffZ}")));
+}
