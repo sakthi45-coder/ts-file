@@ -1,7 +1,6 @@
 using NUnit.Framework;
 using Moq;
 using Microsoft.Extensions.Options;
-using Microsoft.EntityFrameworkCore;  // Ensure this is included
 using System;
 using System.Threading.Tasks;
 
@@ -10,7 +9,6 @@ public class RateLimitAttributeTests
 {
     private RateLimitAttribute _rateLimitAttribute;
     private Mock<IClientPolicyStore> _clientPolicyStoreMock;
-    private DbContextOptions<DataBaseContext> _dbContextOptions;
     private Mock<IMapper> _mapperMock;
     private Mock<IRateLimitingService> _rateLimitingServiceMock;
     private Mock<IOptions<ClientRateLimitOptions>> _optionsMock;
@@ -18,24 +16,17 @@ public class RateLimitAttributeTests
     [SetUp]
     public void SetUp()
     {
-        // Set up In-Memory database for testing
-        _dbContextOptions = new DbContextOptionsBuilder<DataBaseContext>()
-            .UseInMemoryDatabase(databaseName: "TestDb")  // Ensure UseInMemoryDatabase is recognized now
-            .Options;
-
-        var _dataBaseContext = new DataBaseContext(_dbContextOptions);
-
-        // Mock other dependencies
+        // Mock the required dependencies
         _optionsMock = new Mock<IOptions<ClientRateLimitOptions>>();
         _mapperMock = new Mock<IMapper>();
         _rateLimitingServiceMock = new Mock<IRateLimitingService>();
         _clientPolicyStoreMock = new Mock<IClientPolicyStore>();
 
-        // Initialize the RateLimitAttribute with the mocked and real dependencies
+        // Initialize the RateLimitAttribute with the mocked dependencies
         _rateLimitAttribute = new RateLimitAttribute(
             _optionsMock.Object,
             _clientPolicyStoreMock.Object,
-            _dataBaseContext,  // Injecting the real in-memory DbContext
+            null,  // No need for DbContext here
             _mapperMock.Object,
             _rateLimitingServiceMock.Object
         );
