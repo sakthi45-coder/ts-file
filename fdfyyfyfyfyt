@@ -1,0 +1,107 @@
+private async Task ApplyRateLimit(HttpContext context, ClientRequestIdentity identity, List<RateLimitRule> rules, string methodEndpoint, bool isBurstLimit)
+{
+    methodEndpoint = char.ToUpper(methodEndpoint[0]) + methodEndpoint.Substring(1);
+
+    var remainingLimits = new Dictionary<string, int>();
+    var resetTimes = new Dictionary<string, string>();
+
+    foreach (var rule in rules)
+    {
+        var counterId = isBurstLimit ? this.BuildCounterKey1(identity, rule) : this.BuildCounterKey(identity, rule);
+        var counter = await this.counterStore.GetAsync(counterId, context.RequestAborted).ConfigureAwait(false);
+
+        if (!counter.HasValue)
+        {
+            counter = new RateLimitCounter
+            {
+                Timestamp = DateTime.UtcNow,
+                Count = 0
+            };
+            await this.counterStore.SetAsync(counterId, counter, rule.PeriodTimespan ?? rule.Period.ToTimeSpan());
+        }
+
+        if (counter.Value.Count > rule.Limit)
+        {
+            throw new RateLimitReachedException(rule);
+        }
+
+        counter = new RateLimitCounter
+        {
+            Timestamp = counter.Value.Timestamp,
+            Count = counter.Value.Count + 1
+        };
+        await this.counterStore.SetAsync(counterId, counter, rule.PeriodTimespan ?? rule.Period.ToTimeSpan());
+
+        var headers = this.GetRateLimitHeaders(counter, rule, context.RequestAborted);
+        remainingLimits[rule.Endpoint] = int.Parse(headers.Remaining);
+        resetTimes[rule.Endpoint] = headers.Reset;
+    }
+
+    var period = rules.FirstOrDefault()?.Period ?? "1m";
+
+    this.AddHeader(isBurstLimit ? BurstLimitHeaderLimit.Replace("MethodName", methodEndpoint) : RateLimitHeaderLimit, period);
+    this.AddHeader(isBurstLimit ? BurstLimitHeaderRemaining.Replace("MethodName", methodEndpoint) : RateLimitHeaderRemaining,
+        string.Join(", ", remainingLimits.Select(kv => $"{kv.Key}={kv.Value}")));
+    this.AddHeader(isBurstLimit ? BurstLimitHeaderReset.Replace("MethodName", methodEndpoint) : RateLimitReset,
+        string.Join(", ", resetTimes.Select(kv => $"{kv.Key}={kv.Value}")));
+}
+
+
+
+
+
+private async Task ApplyRateLimit(HttpContext context, ClientRequestIdentity identity, List<RateLimitRule> rules, string methodEndpoint, bool isBurstLimit)
+{
+    methodEndpoint = char.ToUpper(methodEndpoint[0]) + methodEndpoint.Substring(1);
+
+    var remainingLimits = new Dictionary<string, int>();
+    var resetTimes = new Dictionary<string, string>();
+
+    var currentTimeUtc = DateTime.UtcNow;
+
+    foreach (var rule in rules)
+    {
+        var counterId = isBurstLimit ? this.BuildCounterKey1(identity, rule) : this.BuildCounterKey(identity, rule);
+        var counter = await this.counterStore.GetAsync(counterId, context.RequestAborted).ConfigureAwait(false);
+
+        var resetTimeUtc = counter.HasValue
+            ? counter.Value.Timestamp.Add(rule.PeriodTimespan ?? rule.Period.ToTimeSpan())
+            : currentTimeUtc.Add(rule.PeriodTimespan ?? rule.Period.ToTimeSpan());
+
+        // If counter is missing or the reset time has passed, reset the counter
+        if (!counter.HasValue || currentTimeUtc >= resetTimeUtc)
+        {
+            counter = new RateLimitCounter
+            {
+                Timestamp = currentTimeUtc,
+                Count = 0
+            };
+            resetTimeUtc = currentTimeUtc.Add(rule.PeriodTimespan ?? rule.Period.ToTimeSpan());
+        }
+
+        if (counter.Value.Count >= rule.Limit)
+        {
+            throw new RateLimitReachedException(rule);
+        }
+
+        // Increase the request count and update the counter store
+        counter = new RateLimitCounter
+        {
+            Timestamp = counter.Value.Timestamp,
+            Count = counter.Value.Count + 1
+        };
+        await this.counterStore.SetAsync(counterId, counter, rule.PeriodTimespan ?? rule.Period.ToTimeSpan());
+
+        // Populate remaining limits and reset times for headers
+        remainingLimits[rule.Endpoint] = rule.Limit - counter.Value.Count;
+        resetTimes[rule.Endpoint] = resetTimeUtc.ToUniversalTime().ToString("o"); // ISO 8601 format
+    }
+
+    var period = rules.FirstOrDefault()?.Period ?? "1m";
+
+    this.AddHeader(isBurstLimit ? BurstLimitHeaderLimit.Replace("MethodName", methodEndpoint) : RateLimitHeaderLimit, period);
+    this.AddHeader(isBurstLimit ? BurstLimitHeaderRemaining.Replace("MethodName", methodEndpoint) : RateLimitHeaderRemaining,
+        string.Join(", ", remainingLimits.Select(kv => $"{kv.Key}={kv.Value}")));
+    this.AddHeader(isBurstLimit ? BurstLimitHeaderReset.Replace("MethodName", methodEndpoint) : RateLimitReset,
+        string.Join(", ", resetTimes.Select(kv => $"{kv.Key}={kv.Value}")));
+}
