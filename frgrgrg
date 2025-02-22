@@ -1,0 +1,99 @@
+using NUnit.Framework;
+using Moq;
+using Microsoft.Extensions.Options;
+using Microsoft.EntityFrameworkCore;  // Ensure this is included
+using System;
+using System.Threading.Tasks;
+
+[TestFixture]
+public class RateLimitAttributeTests
+{
+    private RateLimitAttribute _rateLimitAttribute;
+    private Mock<IClientPolicyStore> _clientPolicyStoreMock;
+    private DbContextOptions<DataBaseContext> _dbContextOptions;
+    private Mock<IMapper> _mapperMock;
+    private Mock<IRateLimitingService> _rateLimitingServiceMock;
+    private Mock<IOptions<ClientRateLimitOptions>> _optionsMock;
+
+    [SetUp]
+    public void SetUp()
+    {
+        // Set up In-Memory database for testing
+        _dbContextOptions = new DbContextOptionsBuilder<DataBaseContext>()
+            .UseInMemoryDatabase(databaseName: "TestDb")  // Ensure UseInMemoryDatabase is recognized now
+            .Options;
+
+        var _dataBaseContext = new DataBaseContext(_dbContextOptions);
+
+        // Mock other dependencies
+        _optionsMock = new Mock<IOptions<ClientRateLimitOptions>>();
+        _mapperMock = new Mock<IMapper>();
+        _rateLimitingServiceMock = new Mock<IRateLimitingService>();
+        _clientPolicyStoreMock = new Mock<IClientPolicyStore>();
+
+        // Initialize the RateLimitAttribute with the mocked and real dependencies
+        _rateLimitAttribute = new RateLimitAttribute(
+            _optionsMock.Object,
+            _clientPolicyStoreMock.Object,
+            _dataBaseContext,  // Injecting the real in-memory DbContext
+            _mapperMock.Object,
+            _rateLimitingServiceMock.Object
+        );
+    }
+
+    [Test]
+    public void GetRateLimitConfigForEndpoint_ShouldReturnCorrectConfigForEndpoint()
+    {
+        // Arrange: Set up RateLimitConfigurationOption
+        var rateLimitConfig = new RateLimitConfigurationOption
+        {
+            Burst = new BurstRateLimitConfig
+            {
+                Create = new RateLimitConfig { ProductionRateLimit = 10 },
+                Read = new RateLimitConfig { ProductionRateLimit = 20 },
+                Write = new RateLimitConfig { ProductionRateLimit = 30 },
+                Delete = new RateLimitConfig { ProductionRateLimit = 40 }
+            }
+        };
+
+        // Act: Call the method for different endpoints
+        var resultCreate = _rateLimitAttribute.GetRateLimitConfigForEndpoint("create", rateLimitConfig);
+        var resultRead = _rateLimitAttribute.GetRateLimitConfigForEndpoint("read", rateLimitConfig);
+
+        // Assert: Ensure correct configuration is returned
+        Assert.NotNull(resultCreate);
+        Assert.AreEqual(10, resultCreate.ProductionRateLimit);
+        Assert.NotNull(resultRead);
+        Assert.AreEqual(20, resultRead.ProductionRateLimit);
+    }
+
+    [Test]
+    public void CreateRateLimitRule_ShouldCreateCorrectRateLimitRule()
+    {
+        // Arrange: Set up the rule and config for testing
+        var rule = new RateLimitRules
+        {
+            Id = 1,
+            IsWhiteList = false,
+            Mode = Mode.Live,
+            SubscriptionId = "sub1"
+        };
+
+        var config = new RateLimitConfig
+        {
+            ProductionRateLimit = 100,
+            TestRateLimit = 50
+        };
+
+        var method = BurstRateLimitMethod.Create;
+        var period = "1m"; // Assume OneMinutePeriod is defined as "1m"
+
+        // Act: Call CreateRateLimitRule method
+        var result = _rateLimitAttribute.CreateRateLimitRule(rule, config, method, period);
+
+        // Assert: Ensure the rule is created with the correct values
+        Assert.AreEqual(100, result.Limit); // Mode is Live, so it should use ProductionRateLimit
+        Assert.AreEqual("1m", result.Period);
+        Assert.AreEqual(BurstRateLimitMethod.Create, result.BurstMethod);
+    }
+}
