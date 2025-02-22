@@ -1,0 +1,83 @@
+using Moq;
+using NUnit.Framework;
+using System;
+using System.Threading.Tasks;
+using Microsoft.AspNetCore.Mvc.Filters;
+using Microsoft.AspNetCore.Http;
+
+[TestFixture]
+public class RatelimitServiceAttributeTests
+{
+    private Mock<IRateLimitingService> mockRateLimitingService;
+    private Mock<IUserDataService> mockUserDataService;
+    private Mock<IHttpContextAccessor> mockHttpContextAccessor;
+    private RatelimitServiceAttribute ratelimitServiceAttribute;
+
+    [SetUp]
+    public void SetUp()
+    {
+        mockRateLimitingService = new Mock<IRateLimitingService>();
+        mockUserDataService = new Mock<IUserDataService>();
+        mockHttpContextAccessor = new Mock<IHttpContextAccessor>();
+
+        ratelimitServiceAttribute = new RatelimitServiceAttribute(mockRateLimitingService.Object, mockUserDataService.Object, mockHttpContextAccessor.Object);
+    }
+
+    [Test]
+    public async Task OnActionExecutionAsync_WhenRateLimitCacheExists_ShouldProcessRules()
+    {
+        // Arrange
+        var httpContext = new DefaultHttpContext();
+        var context = new ActionExecutingContext(
+            new ActionContext(httpContext, new Microsoft.AspNetCore.Mvc.Abstractions.RouteData(), new Microsoft.AspNetCore.Mvc.Abstractions.ActionDescriptor()),
+            new List<IFilterMetadata>(),
+            new Dictionary<string, object>(),
+            null
+        );
+
+        var userDataService = new Mock<IUserDataService>();
+        userDataService.Setup(x => x.Environment).Returns(ApplicationEnvironment.Test);
+        userDataService.Setup(x => x.SubscriptionId).Returns(Guid.NewGuid());
+
+        // Setup mock methods
+        mockRateLimitingService.Setup(x => x.GetRateLimitCacheAsync(It.IsAny<Guid>())).ReturnsAsync(new RateLimitConfigurationOption());
+        mockRateLimitingService.Setup(x => x.ExistRateLimitCacheAsync(It.IsAny<string>())).ReturnsAsync(true);
+        mockRateLimitingService.Setup(x => x.FetchRulesAsync(It.IsAny<Guid>(), It.IsAny<Mode>())).ReturnsAsync(new List<RateLimitRules>());
+        
+        // Act
+        await ratelimitServiceAttribute.OnActionExecutionAsync(context, () => Task.CompletedTask);
+
+        // Assert
+        mockRateLimitingService.Verify(x => x.FetchRulesAsync(It.IsAny<Guid>(), It.IsAny<Mode>()), Times.Once);
+        mockRateLimitingService.Verify(x => x.ProcessRulesAsync(It.IsAny<List<RateLimitRules>>(), It.IsAny<string>()), Times.Once);
+    }
+
+    [Test]
+    public async Task OnActionExecutionAsync_WhenNoRateLimitCache_ShouldUpdateDefaultRules()
+    {
+        // Arrange
+        var httpContext = new DefaultHttpContext();
+        var context = new ActionExecutingContext(
+            new ActionContext(httpContext, new Microsoft.AspNetCore.Mvc.Abstractions.RouteData(), new Microsoft.AspNetCore.Mvc.Abstractions.ActionDescriptor()),
+            new List<IFilterMetadata>(),
+            new Dictionary<string, object>(),
+            null
+        );
+
+        var userDataService = new Mock<IUserDataService>();
+        userDataService.Setup(x => x.Environment).Returns(ApplicationEnvironment.Test);
+        userDataService.Setup(x => x.SubscriptionId).Returns(Guid.NewGuid());
+
+        // Setup mock methods
+        mockRateLimitingService.Setup(x => x.GetRateLimitCacheAsync(It.IsAny<Guid>())).ReturnsAsync(new RateLimitConfigurationOption());
+        mockRateLimitingService.Setup(x => x.ExistRateLimitCacheAsync(It.IsAny<string>())).ReturnsAsync(false);
+        mockRateLimitingService.Setup(x => x.FetchRulesAsync(It.IsAny<Guid>(), It.IsAny<Mode>())).ReturnsAsync((List<RateLimitRules>)null);
+        mockRateLimitingService.Setup(x => x.GetDefaultRulesForCurrentEnvironment(It.IsAny<IUserDataService>())).Returns(new List<RateLimitRules>());
+
+        // Act
+        await ratelimitServiceAttribute.OnActionExecutionAsync(context, () => Task.CompletedTask);
+
+        // Assert
+        mockRateLimitingService.Verify(x => x.UpdateRateLimitRules(It.IsAny<string>(), It.IsAny<List<RateLimitRules>>()), Times.Once);
+    }
+}
