@@ -1,0 +1,151 @@
+using NUnit.Framework;
+using Moq;
+using Microsoft.Extensions.Options;
+using System;
+using System.Threading.Tasks;
+using Microsoft.AspNetCore.Mvc.Filters;
+using Microsoft.AspNetCore.Http;
+using System.Collections.Generic;
+
+[TestFixture]
+public class RateLimitAttributeTests
+{
+    private RateLimitAttribute _rateLimitAttribute;
+    private Mock<IClientPolicyStore> _clientPolicyStoreMock;
+    private Mock<DataBaseContext> _dataBaseContextMock;
+    private Mock<IMapper> _mapperMock;
+    private Mock<IRateLimitingService> _rateLimitingServiceMock;
+    private Mock<IOptions<ClientRateLimitOptions>> _optionsMock;
+    private Mock<UserDataService> _userDataServiceMock;
+    private Mock<ActionExecutingContext> _actionExecutingContextMock;
+    private Mock<ActionExecutionDelegate> _actionExecutionDelegateMock;
+
+    [SetUp]
+    public void SetUp()
+    {
+        // Mocking dependencies
+        _clientPolicyStoreMock = new Mock<IClientPolicyStore>();
+        _dataBaseContextMock = new Mock<DataBaseContext>();
+        _mapperMock = new Mock<IMapper>();
+        _rateLimitingServiceMock = new Mock<IRateLimitingService>();
+        _optionsMock = new Mock<IOptions<ClientRateLimitOptions>>();
+
+        // Initialize the RateLimitAttribute with the mocked dependencies
+        _rateLimitAttribute = new RateLimitAttribute(
+            _optionsMock.Object,
+            _clientPolicyStoreMock.Object,
+            _dataBaseContextMock.Object,
+            _mapperMock.Object,
+            _rateLimitingServiceMock.Object
+        );
+
+        // Mock ActionExecutingContext and ActionExecutionDelegate
+        _actionExecutingContextMock = new Mock<ActionExecutingContext>(
+            Mock.Of<ActionContext>(),
+            new List<IFilterMetadata>(),
+            new Dictionary<string, object>(),
+            Mock.Of<IController>()
+        );
+
+        _actionExecutionDelegateMock = new Mock<ActionExecutionDelegate>();
+    }
+
+    [Test]
+    public async Task OnActionExecutionAsync_ShouldFetchRateLimitAndProcessRules()
+    {
+        // Arrange: Set up required values for mock and test data
+        var userDataService = new UserDataService(Mock.Of<HttpContext>());
+        userDataService.SubscriptionId = new Guid("b44c40a5-df28-4d25-a5a9-d5fd1fcf6720");
+        userDataService.Environment = ApplicationEnvironment.Test; // Set environment to Test
+        _actionExecutingContextMock.Setup(x => x.HttpContext.RequestServices.GetService(typeof(UserDataService))).Returns(userDataService);
+
+        var rateLimitConfigurationOption = new RateLimitConfigurationOption
+        {
+            Burst = new BurstRateLimit
+            {
+                Create = new RateLimitConfig { ProductionRateLimit = 10, TestRateLimit = 5 },
+                Read = new RateLimitConfig { ProductionRateLimit = 20, TestRateLimit = 10 },
+                Write = new RateLimitConfig { ProductionRateLimit = 30, TestRateLimit = 15 },
+                Delete = new RateLimitConfig { ProductionRateLimit = 40, TestRateLimit = 20 }
+            }
+        };
+
+        _rateLimitingServiceMock.Setup(service => service.GetRateLimitCacheAsync(It.IsAny<Guid>())).ReturnsAsync(rateLimitConfigurationOption);
+
+        var rateLimitRules = new List<RateLimitRules>
+        {
+            new RateLimitRules
+            {
+                Id = Guid.NewGuid(),
+                SubscriptionId = userDataService.SubscriptionId,
+                Mode = Mode.Test,
+                IsWhiteList = false
+            }
+        };
+
+        _rateLimitingServiceMock.Setup(service => service.FetchRulesAsync(It.IsAny<Guid>(), It.IsAny<Mode>())).ReturnsAsync(rateLimitRules);
+
+        // Act: Call the OnActionExecutionAsync method
+        await _rateLimitAttribute.OnActionExecutionAsync(_actionExecutingContextMock.Object, _actionExecutionDelegateMock.Object);
+
+        // Assert: Ensure that the methods are called and cache processing is simulated
+        _rateLimitingServiceMock.Verify(service => service.GetRateLimitCacheAsync(It.IsAny<Guid>()), Times.Once);
+        _rateLimitingServiceMock.Verify(service => service.FetchRulesAsync(It.IsAny<Guid>(), Mode.Test), Times.Once);
+    }
+
+    [Test]
+    public void GetRateLimitConfigForEndpoint_ShouldReturnCorrectConfigForEndpoint()
+    {
+        // Arrange: Mock rate limit configuration
+        var rateLimitConfiguration = new RateLimitConfigurationOption
+        {
+            Burst = new BurstRateLimit
+            {
+                Create = new RateLimitConfig { ProductionRateLimit = 10 },
+                Read = new RateLimitConfig { ProductionRateLimit = 20 },
+                Write = new RateLimitConfig { ProductionRateLimit = 30 },
+                Delete = new RateLimitConfig { ProductionRateLimit = 40 }
+            }
+        };
+
+        // Act
+        var createConfig = _rateLimitAttribute.GetRateLimitConfigForEndpoint("create", rateLimitConfiguration);
+        var readConfig = _rateLimitAttribute.GetRateLimitConfigForEndpoint("read", rateLimitConfiguration);
+
+        // Assert
+        Assert.NotNull(createConfig);
+        Assert.AreEqual(10, createConfig.ProductionRateLimit);
+        Assert.NotNull(readConfig);
+        Assert.AreEqual(20, readConfig.ProductionRateLimit);
+    }
+
+    [Test]
+    public void CreateRateLimitRule_ShouldCreateCorrectRateLimitRule()
+    {
+        // Arrange
+        var rule = new RateLimitRules
+        {
+            Id = Guid.NewGuid(),
+            IsWhiteList = false,
+            Mode = Mode.Live,
+            SubscriptionId = new Guid("b44c40a5-df28-4d25-a5a9-d5fd1fcf6720")
+        };
+
+        var config = new RateLimitConfig
+        {
+            ProductionRateLimit = 100,
+            TestRateLimit = 50
+        };
+
+        var method = BurstRateLimitMethod.Create;
+        var period = "1m"; // One minute period
+
+        // Act
+        var result = _rateLimitAttribute.CreateRateLimitRule(rule, config, method, period);
+
+        // Assert
+        Assert.AreEqual(100, result.Limit); // Mode is Live, so it should use ProductionRateLimit
+        Assert.AreEqual("1m", result.Period);
+        Assert.AreEqual(BurstRateLimitMethod.Create, result.BurstMethod);
+    }
+}
