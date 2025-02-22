@@ -1,0 +1,65 @@
+using NUnit.Framework;
+
+[TestFixture]
+public class RateLimitTests
+{
+    [Test]
+    public void GetRateLimitConfigForEndpoint_ShouldReturnCorrectConfigForEndpoint()
+    {
+        // Arrange
+        var rateLimitConfig = new RateLimitConfigurationOption
+        {
+            Burst = new BurstRateLimit
+            {
+                Create = new RateLimitConfig { ProductionRateLimit = 10 },
+                Read = new RateLimitConfig { ProductionRateLimit = 20 },
+                Write = new RateLimitConfig { ProductionRateLimit = 30 },
+                Delete = new RateLimitConfig { ProductionRateLimit = 40 }
+            }
+        };
+        
+        var rateLimitService = new RateLimitService();
+
+        // Act
+        var resultCreate = rateLimitService.GetRateLimitConfigForEndpoint("create", rateLimitConfig);
+        var resultRead = rateLimitService.GetRateLimitConfigForEndpoint("read", rateLimitConfig);
+
+        // Assert
+        Assert.NotNull(resultCreate);
+        Assert.AreEqual(10, resultCreate.ProductionRateLimit);
+        Assert.NotNull(resultRead);
+        Assert.AreEqual(20, resultRead.ProductionRateLimit);
+    }
+
+    [Test]
+    public void CreateRateLimitRule_ShouldCreateCorrectRateLimitRule()
+    {
+        // Arrange
+        var rule = new RateLimitRules
+        {
+            Id = 1,
+            IsWhiteList = false,
+            Mode = Mode.Live,
+            SubscriptionId = "sub1"
+        };
+
+        var config = new RateLimitConfig
+        {
+            ProductionRateLimit = 100,
+            TestRateLimit = 50
+        };
+
+        var method = BurstRateLimitMethod.Create;
+        var period = "1m"; // Assume OneMinutePeriod is defined as "1m"
+        
+        var rateLimitService = new RateLimitService();
+
+        // Act
+        var result = rateLimitService.CreateRateLimitRule(rule, config, method, period);
+
+        // Assert
+        Assert.AreEqual(100, result.Limit); // Mode is Live, so it should use ProductionRateLimit
+        Assert.AreEqual("1m", result.Period);
+        Assert.AreEqual(BurstRateLimitMethod.Create, result.BurstMethod);
+    }
+}
