@@ -1,0 +1,58 @@
+var remainingLimits = new Dictionary<string, int>();
+var resetTimes = new Dictionary<string, string>();
+
+var resetCacheKey = $"ResetTime:{identity.ClientId.Split('_')[0]}";
+var cachedResetTime = await this.counterStore.GetAsync(resetCacheKey, context.RequestAborted);
+
+DateTime commonResetTime;
+if (cachedResetTime.HasValue)
+{
+    commonResetTime = cachedResetTime.Value.Timestamp;
+}
+else
+{
+    commonResetTime = DateTime.UtcNow.AddMinutes(1);
+    await this.counterStore.SetAsync(resetCacheKey, new RateLimitCounter { Timestamp = commonResetTime, Count = 0 }, TimeSpan.FromMinutes(1));
+}
+
+foreach (var rule in rules)
+{
+    var methodEndpoint1 = RateLimitHelper.GetMethodTypeFromAttribute(context);
+    var counterId = this.BuildCounterKey1(identity, rule);
+    var counter = await this.counterStore.GetAsync(counterId, context.RequestAborted).ConfigureAwait(false);
+
+    if (!counter.HasValue)
+    {
+        counter = new RateLimitCounter { Timestamp = commonResetTime, Count = 0 };
+    }
+
+    if (counter.HasValue && counter.Value.Count > rule.Limit)
+    {
+        throw new RateLimitReachedException(rule);
+    }
+
+    if (string.Equals(rule.Endpoint, methodEndpoint1, StringComparison.OrdinalIgnoreCase))
+    {
+        if (DateTime.UtcNow >= commonResetTime)
+        {
+            counter = new RateLimitCounter { Timestamp = DateTime.UtcNow, Count = 0 };
+            await this.counterStore.SetAsync(counterId, counter, TimeSpan.FromMinutes(1));
+        }
+        else
+        {
+            counter = new RateLimitCounter { Timestamp = counter.Value.Timestamp, Count = counter.Value.Count + 1 };
+            await this.counterStore.SetAsync(counterId, counter, TimeSpan.FromMinutes(1));
+        }
+    }
+
+    remainingLimits[rule.Endpoint] = (int)Math.Max(0, rule.Limit - counter.Value.Count);
+    resetTimes[rule.Endpoint] = counter.Value.Timestamp.ToString("o"); // Updated to use the individual endpoint’s timestamp
+}
+
+const string headerLimit = "X-Burst-Limit-Limit";
+const string headerRemaining = "X-Burst-Limit-Remaining";
+const string headerReset = "X-Burst-Limit-Reset";
+
+this.AddHeader(headerLimit, "1m");
+this.AddHeader(headerRemaining, string.Join(", ", remainingLimits.Select(kv => $"{kv.Key}={kv.Value}")));
+this.AddHeader(headerReset, string.Join(", ", resetTimes.Select(kv => $"{kv.Key}={kv.Value}")));
