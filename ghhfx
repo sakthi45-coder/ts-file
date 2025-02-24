@@ -1,0 +1,116 @@
+private async Task ApplyRateLimit(HttpContext context, ClientRequestIdentity identity, List<RateLimitRule> rules, string methodEndpoint, bool isBurstLimit)
+{
+    methodEndpoint = char.ToUpper(methodEndpoint[0]) + methodEndpoint.Substring(1);
+
+    if (isBurstLimit)
+    {
+        string period = "1m";
+        var remainingLimits = new ConcurrentDictionary<string, int>();
+        var resetTimes = new ConcurrentDictionary<string, string>();
+        DateTime commonResetTime;
+
+        var resetCacheKey = $"ResetTime:{identity.ClientId.Split('_')[0]}";
+        var cachedResetTime = await this.counterStore.GetAsync(resetCacheKey, context.RequestAborted);
+        
+        // Determine the common reset time
+        commonResetTime = cachedResetTime?.Timestamp ?? DateTime.UtcNow.AddMinutes(1);
+        
+        // If no cache, set reset time in the counter store
+        if (!cachedResetTime.HasValue)
+        {
+            await this.counterStore.SetAsync(resetCacheKey, new RateLimitCounter { Timestamp = commonResetTime, Count = 0 }, TimeSpan.FromMinutes(1));
+        }
+
+        var tasks = new List<Task>();
+
+        // Iterate through the rate limit rules and process them concurrently
+        foreach (var rule in rules)
+        {
+            tasks.Add(Task.Run(async () =>
+            {
+                var counterId = this.BuildCounterKey1(identity, rule);
+                var counter = await this.counterStore.GetAsync(counterId, context.RequestAborted).ConfigureAwait(false);
+
+                // Initialize counter if it doesn't exist
+                if (!counter.HasValue)
+                {
+                    counter = new RateLimitCounter { Timestamp = commonResetTime, Count = 0 };
+                }
+
+                // Check if the request count exceeds the limit
+                if (counter.HasValue && counter.Value.Count > rule.Limit)
+                {
+                    throw new RateLimitReachedException(rule);
+                }
+
+                DateTime reset;
+                double remaining;
+
+                if (string.Equals(rule.Endpoint, methodEndpoint, StringComparison.OrdinalIgnoreCase))
+                {
+                    if (DateTime.UtcNow >= commonResetTime)
+                    {
+                        counter = new RateLimitCounter
+                        {
+                            Timestamp = DateTime.UtcNow,
+                            Count = 0,
+                        };
+                    }
+                    else
+                    {
+                        counter = new RateLimitCounter
+                        {
+                            Timestamp = counter.Value.Timestamp,
+                            Count = counter.Value.Count + 1,
+                        };
+                    }
+
+                    await this.counterStore.SetAsync(counterId, counter, TimeSpan.FromMinutes(1));
+                }
+
+                reset = commonResetTime;
+                remaining = rule.Limit - counter.Value.Count;
+
+                // Update reset times and remaining limits concurrently
+                resetTimes[rule.Endpoint] = reset.ToString("o");
+                remainingLimits[rule.Endpoint] = (int)Math.Max(0, remaining);
+
+                if (string.Equals(rule.Endpoint, methodEndpoint, StringComparison.OrdinalIgnoreCase))
+                {
+                    period = rule.Period;
+                }
+            }));
+        }
+
+        // Wait for all rate limit rule tasks to complete
+        await Task.WhenAll(tasks);
+
+        // Ensure we handle cases where the method endpoint might not be in the rules list
+        if (!resetTimes.ContainsKey(methodEndpoint))
+        {
+            var mainRule = rules.FirstOrDefault(r => r.Endpoint == methodEndpoint);
+            if (mainRule != null)
+            {
+                var mainCounterId = this.BuildCounterKey1(identity, mainRule);
+                var mainCounter = await this.counterStore.GetAsync(mainCounterId, context.RequestAborted).ConfigureAwait(false);
+
+                if (!mainCounter.HasValue)
+                {
+                    mainCounter = new RateLimitCounter { Timestamp = commonResetTime, Count = 0 };
+                }
+
+                resetTimes[methodEndpoint] = mainCounter.Value.Timestamp.ToString("o");
+                remainingLimits[methodEndpoint] = (int)Math.Max(0, mainRule.Limit - mainCounter.Value.Count);
+            }
+        }
+
+        // Add headers with the accumulated data
+        const string headerLimit = "X-Burst-Limit-Limit";
+        const string headerRemaining = "X-Burst-Limit-Remaining";
+        const string headerReset = "X-Burst-Limit-Reset";
+
+        this.AddHeader(headerLimit, period);
+        this.AddHeader(headerRemaining, string.Join(", ", remainingLimits.Select(kv => $"{kv.Key}={kv.Value}")));
+        this.AddHeader(headerReset, string.Join(", ", resetTimes.Select(kv => $"{kv.Key}={kv.Value}")));
+    }
+}
