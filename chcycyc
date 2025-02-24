@@ -1,0 +1,107 @@
+private async Task ApplyRateLimit(HttpContext context, ClientRequestIdentity identity, List<RateLimitRule> rules, string methodEndpoint, bool isBurstLimit)
+{
+    methodEndpoint = char.ToUpper(methodEndpoint[0]) + methodEndpoint.Substring(1);
+
+    if (isBurstLimit)
+    {
+        string period = "1m";
+        var remainingLimits = new Dictionary<string, int>();
+        var resetTimes = new Dictionary<string, string>();
+        DateTime commonResetTime;
+
+        // Check the common reset time
+        var resetCacheKey = $"ResetTime:{identity.ClientId.Split('_')[0]}";
+        var cachedResetTime = await this.counterStore.GetAsync(resetCacheKey, context.RequestAborted);
+        if (cachedResetTime.HasValue)
+        {
+            commonResetTime = cachedResetTime.Value.Timestamp;
+        }
+        else
+        {
+            // Ensure common reset time is set to 1 minute from now
+            commonResetTime = DateTime.UtcNow.AddMinutes(1);
+            await this.counterStore.SetAsync(resetCacheKey, new RateLimitCounter { Timestamp = commonResetTime, Count = 0 }, TimeSpan.FromMinutes(1));
+        }
+
+        // Temporary dictionaries for storing header information
+        var tempRemainingLimits = new Dictionary<string, int>();
+        var tempResetTimes = new Dictionary<string, string>();
+
+        foreach (var rule in rules)
+        {
+            // Process the request for the rule
+            await this.ProcessRequestAsync(identity, rule, context.RequestAborted).ConfigureAwait(false);
+
+            var counterId = this.BuildCounterKey1(identity, rule);
+            var counter = await this.counterStore.GetAsync(counterId, context.RequestAborted).ConfigureAwait(false);
+
+            // If no counter exists, initialize it
+            if (!counter.HasValue)
+            {
+                counter = new RateLimitCounter { Timestamp = commonResetTime, Count = 0 };
+            }
+
+            // Increment the counter for the current request
+            counter.Value.Count++;
+
+            // Save the updated counter back to the store
+            await this.counterStore.SetAsync(counterId, counter.Value, TimeSpan.FromMinutes(1)).ConfigureAwait(false);
+
+            // Check if the rate limit has been reached and throw exception if necessary
+            if (counter.Value.Count > rule.Limit)
+            {
+                throw new RateLimitReachedException(rule);
+            }
+
+            // Get headers for rate limit
+            var headers = this.GetRateLimitHeaders(counter, rule, context.RequestAborted);
+
+            // Store the reset time and remaining limits for each endpoint
+            tempResetTimes[rule.Endpoint] = headers.Reset;
+            tempRemainingLimits[rule.Endpoint] = (int)Math.Max(0, rule.Limit - counter.Value.Count);
+
+            // Update period for method endpoint if it matches the rule's endpoint
+            if (string.Equals(rule.Endpoint, methodEndpoint, StringComparison.OrdinalIgnoreCase))
+            {
+                period = rule.Period;
+            }
+        }
+
+        // If no header information was found for the method endpoint, get it from the main rule
+        if (!tempResetTimes.ContainsKey(methodEndpoint))
+        {
+            var mainRule = rules.FirstOrDefault(r => r.Endpoint == methodEndpoint);
+            if (mainRule != null)
+            {
+                var mainCounterId = this.BuildCounterKey1(identity, mainRule);
+                var mainCounter = await this.counterStore.GetAsync(mainCounterId, context.RequestAborted).ConfigureAwait(false);
+
+                // If the main counter doesn't exist, initialize it
+                if (!mainCounter.HasValue)
+                {
+                    mainCounter = new RateLimitCounter { Timestamp = commonResetTime, Count = 0 };
+                }
+
+                // Increment the main counter
+                mainCounter.Value.Count++;
+
+                // Save the updated main counter
+                await this.counterStore.SetAsync(mainCounterId, mainCounter.Value, TimeSpan.FromMinutes(1)).ConfigureAwait(false);
+
+                // Get headers for the main rule
+                var mainHeaders = this.GetRateLimitHeaders(mainCounter, mainRule, context.RequestAborted);
+                tempResetTimes[methodEndpoint] = mainHeaders.Reset;
+                tempRemainingLimits[methodEndpoint] = (int)Math.Max(0, mainRule.Limit - mainCounter.Value.Count);
+            }
+        }
+
+        // Finalize the headers for burst rate limit
+        const string headerLimit = "X-Burst-Limit-Limit";
+        const string headerRemaining = "X-Burst-Limit-Remaining";
+        const string headerReset = "X-Burst-Limit-Reset";
+
+        this.AddHeader(headerLimit, period);
+        this.AddHeader(headerRemaining, string.Join(", ", tempRemainingLimits.Select(kv => $"{kv.Key}={kv.Value}")));
+        this.AddHeader(headerReset, string.Join(", ", tempResetTimes.Select(kv => $"{kv.Key}={kv.Value}")));
+    }
+}
