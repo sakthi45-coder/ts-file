@@ -1,0 +1,65 @@
+private PageFormElements PrepareFormField(PdfLoadedDocument loadedDocument, BoldSign.ApiManagement.Models.FieldType? fieldType, BoldSign.Base.Models.Rectangle bounds = null)
+{
+    List<FormElement> form = new List<FormElement>();
+
+    // Example of mapping fieldType to corresponding PdfLoadedField type
+    PdfLoadedField pdfField = ConvertToPdfLoadedField(fieldType, bounds);
+    
+    FormElement formElement = this.CreateFormElementsFromPdfFields(pdfField, bounds);
+    
+    if (formElement.ElementType != null)
+    {
+        form.Add(formElement);
+    }
+
+    PageFormElements preparedFields = new PageFormElements();
+    preparedFields.PageIndex = loadedDocument.Pages.IndexOf(pdfField.Page) + 1;
+    preparedFields.FormElements = form.ToArray();
+    return preparedFields;
+}
+
+// Convert BoldSign.ApiManagement.Models.FieldType to corresponding PdfLoadedField
+private PdfLoadedField ConvertToPdfLoadedField(BoldSign.ApiManagement.Models.FieldType? fieldType, BoldSign.Base.Models.Rectangle bounds)
+{
+    // Add your logic to map BoldSign.FieldType to PdfLoadedField
+    switch (fieldType)
+    {
+        case BoldSign.ApiManagement.Models.FieldType.TextBox:
+            return new PdfLoadedTextBoxField
+            {
+                Bounds = bounds, // You may need to adjust based on actual bounds
+                Name = "TextBoxField",
+                Required = true // Adjust based on your requirements
+            };
+        case BoldSign.ApiManagement.Models.FieldType.Signature:
+            return new PdfLoadedSignatureField
+            {
+                Bounds = bounds, // Adjust bounds
+                Name = "SignatureField",
+                Required = true
+            };
+        case BoldSign.ApiManagement.Models.FieldType.CheckBox:
+            return new PdfLoadedCheckBoxField
+            {
+                Bounds = bounds, // Adjust bounds
+                Name = "CheckBoxField",
+                Required = false
+            };
+        case BoldSign.ApiManagement.Models.FieldType.RadioButton:
+            return new PdfLoadedRadioButtonListField
+            {
+                Bounds = bounds, // Adjust bounds
+                Name = "RadioButtonField",
+                Required = true
+            };
+        case BoldSign.ApiManagement.Models.FieldType.DropDown:
+            return new PdfLoadedComboBoxField
+            {
+                Bounds = bounds, // Adjust bounds
+                Name = "DropDownField",
+                Required = true
+            };
+        default:
+            throw new ArgumentException("Unsupported field type");
+    }
+}
