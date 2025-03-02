@@ -1,0 +1,138 @@
+public virtual async Task<bool> DeleteTemplatesItemsAsync(string[] templateIds, ClaimsPrincipal claims, IAuthorizationService authorizationService, IDocumentService documentService, UserDataService userDataService, HttpContext context, IOrgActivityService orgActivityService, IHubContext<NotificationHub> hubConnection, RequestDetailsService requestDetailsService)
+{
+    HttpContext httpContext = context;
+    var permissionList = await new AccessRightsReader(context, null, this.apiRequestService)
+        .GetPermissionsListAsync(userDataService, this.cacheService).ConfigureAwait(false);
+    var allowedGroupsTuple = await PermissionAuthorizationHandler.GetResourceOwnerAllowedGroups(userDataService, context, Permissions.TemplateResources, this.cacheService, this.teamManagement, this.apiRequestService).ConfigureAwait(false);
+    var groupData = await this.teamManagement.GetTeamListAsync(userDataService).ConfigureAwait(false);
+    context.Items.TryAdd(DocumentDetailsReader.TeamListCache, groupData);
+    
+    var deleteResults = new ConcurrentDictionary<string, bool>();
+    var deleteTasks = templateIds.Select(async templateId =>
+    {
+        try
+        {
+            var accessDetails = await this.GetTemplateByDocumentId(templateId, userDataService, DocumentStatus.Completed, allowedGroupsTuple.Item1).ConfigureAwait(false);
+
+            if (accessDetails == null)
+            {
+                deleteResults[templateId] = false;
+                return;
+            }
+
+            var templateDetailsReader = new TemplateDetailsReader(context, accessDetails, permissionList, this.cacheService, this.apiRequestService);
+            var role = new TemplatePolicy(context, templateDetailsReader, this.apiRequestService);
+
+            var authorizationRequirements = new List<IAuthorizationRequirement> { new TemplateDeleteRequirement() };
+
+            bool policySucceed = await documentService.GetPolicyStatus(authorizationRequirements, claims, role).ConfigureAwait(false);
+            string baseUrl = requestDetailsService.HostedDomain;
+            if (policySucceed)
+            {
+                var result = await this.AddDeletedTemplateItemAsync(templateId, documentService, userDataService).ConfigureAwait(false);
+                if (result)  // Check if the deletion was successful before proceeding
+                {
+                    // Send email or notification after successful deletion
+                    await documentService.NotifyDeletedTemplatesUsers(accessDetails, new Uri(baseUrl), hubConnection, this.teamManagement).ConfigureAwait(false);
+                    _ = this.LogDeletesUserActivityAsync(accessDetails, orgActivityService);
+                    deleteResults[templateId] = true;
+                }
+                else
+                {
+                    deleteResults[templateId] = false;
+                }
+            }
+            else
+            {
+                deleteResults[templateId] = false;
+            }
+        }
+        catch (Exception)
+        {
+            deleteResults[templateId] = false;
+        }
+    }).ToList();
+
+    await Task.WhenAll(deleteTasks).ConfigureAwait(false);
+    return deleteResults.Values.All(result => result);
+}
+
+deleteYesBtn () {
+  this.$nuxt.$spinner.show(true);
+  const gridObj = this.$refs.grid1.ej2Instances;
+  const toastObj = this.$nuxt.$store.state.toastObj;
+  const selectedRecords: any[] = gridObj.getSelectedRecords();
+
+  if (!selectedRecords.length) {
+    this.$nuxt.$spinner.show(false);
+    return;
+  }
+
+  const documentName = selectedRecords[0].messageTitle;
+  const successContent = this.$nuxt.$t('toast.deleteTempPermanentSuccessToastTittle', {
+    documentName: documentName,
+  });
+  const failureContent = this.$nuxt.$t('toast.deleteTempPermanentFailureToastTittle', {
+    documentName: documentName,
+  });
+
+  const ids: string[] = selectedRecords.map(item => item.documentId);
+  this.onNewNotificationReceived();
+  this.$data.deleteDialogVisible = false;
+
+  // Handle draft template deletion separately
+  if (isStatusMatch(this.$nuxt.$route, ['drafts'])) {
+    // If drafts are selected, delete them using deleteDraftTemplate API
+    this.$api.template
+      .deleteDraftTemplate(ids) // Call deleteDraftTemplate API for drafts
+      .then(() => {
+        this.selectedDocumentsCount = 0;
+        this.checkState = false;
+        this.hideSelectedItems(selectedRecords);
+        this.scheduleGridRefresh();
+        this.$nuxt.$toastService.show(successContent, 'bs_toast_success', 'bs_delete_toast');
+      })
+      .catch(() => {
+        this.$nuxt.$toastService.show(failureContent, 'bs_toast_failure', 'bs_delete_toast');
+      })
+      .finally(() => {
+        this.$nuxt.$spinner.show(false);
+      });
+  } else {
+    // If non-draft templates are selected, call deleteTemplate for one, mergeDeleteTemplate for multiple
+    if (selectedRecords.length === 1) {
+      this.$api.template
+        .deleteTemplate(ids[0]) // Call deleteTemplate API for a single template
+        .then(() => {
+          this.selectedDocumentsCount = 0;
+          this.checkState = false;
+          this.hideSelectedItems(selectedRecords);
+          this.scheduleGridRefresh();
+          this.$nuxt.$toastService.show(successContent, 'bs_toast_success', 'bs_delete_toast');
+        })
+        .catch(() => {
+          this.$nuxt.$toastService.show(failureContent, 'bs_toast_failure', 'bs_delete_toast');
+        })
+        .finally(() => {
+          this.$nuxt.$spinner.show(false);
+        });
+    } else {
+      this.$api.template.mergeDeleteTemplate(ids) // Call mergeDeleteTemplate for multiple templates
+        .then(() => {
+          this.selectedDocumentsCount = 0;
+          this.checkState = false;
+          this.hideSelectedItems(selectedRecords);
+          this.scheduleGridRefresh();
+          this.$nuxt.$toastService.show(successContent, 'bs_toast_success', 'bs_delete_toast');
+        })
+        .catch(() => {
+          this.$nuxt.$toastService.show(failureContent, 'bs_toast_failure', 'bs_delete_toast');
+        })
+        .finally(() => {
+          this.$nuxt.$spinner.show(false);
+        });
+    }
+  }
+
+  this.isToolbar = false;
+}
